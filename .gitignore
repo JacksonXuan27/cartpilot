@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+!.env.example
+.superpowers/
+.worktrees/
+data/*.db*
+data/*.sqlite*
+data/*.log
+logs/
+*.pid
+
