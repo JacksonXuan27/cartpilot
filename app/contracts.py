@@ -1,0 +1,53 @@
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+MessageRole = Literal["system", "user", "assistant"]
+
+
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: MessageRole
+    content: str = Field(min_length=1)
+
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    messages: list[ChatMessage] = Field(min_length=1)
+    session_id: str | None = Field(default=None, min_length=1)
+    stream: bool = False
+
+
+class TokenUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+
+
+class ChatResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1)
+    session_id: str | None = Field(default=None, min_length=1)
+    message: ChatMessage
+    finish_reason: Literal["stop", "length", "tool_call"] = "stop"
+    usage: TokenUsage | None = None
+
+
+class ErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    retryable: bool = False
+
+
+class ErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    error: ErrorDetail
