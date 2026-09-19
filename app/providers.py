@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -16,17 +16,28 @@ class ModelResult:
     usage: TokenUsage | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ModelChunk:
+    delta: str
+    finish_reason: str | None = None
+
+
 @runtime_checkable
 class ChatModelProvider(Protocol):
     async def complete(self, messages: Sequence[ChatMessage]) -> ModelResult:
         """Generate one assistant message for a conversation."""
+
+    def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[ModelChunk]:
+        """Yield incremental assistant message chunks for a conversation."""
 
 
 @dataclass(slots=True)
 class StubModelProvider:
     reply: str = "I can help with that."
     usage: TokenUsage | None = None
+    chunk_size: int = 8
     calls: list[tuple[ChatMessage, ...]] = field(default_factory=list)
+    stream_calls: list[tuple[ChatMessage, ...]] = field(default_factory=list)
 
     async def complete(self, messages: Sequence[ChatMessage]) -> ModelResult:
         conversation = tuple(message.model_copy(deep=True) for message in messages)
@@ -38,3 +49,18 @@ class StubModelProvider:
             message=ChatMessage(role="assistant", content=self.reply),
             usage=self.usage,
         )
+
+    async def _stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[ModelChunk]:
+        conversation = tuple(message.model_copy(deep=True) for message in messages)
+        if not conversation:
+            raise ModelProviderError("at least one message is required")
+        if self.chunk_size < 1:
+            raise ModelProviderError("chunk_size must be positive")
+
+        self.stream_calls.append(conversation)
+        for offset in range(0, len(self.reply), self.chunk_size):
+            yield ModelChunk(delta=self.reply[offset : offset + self.chunk_size])
+        yield ModelChunk(delta="", finish_reason="stop")
+
+    def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[ModelChunk]:
+        return self._stream(messages)
