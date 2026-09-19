@@ -3,17 +3,25 @@ import json
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
-from app.contracts import ChatRequest, ChatResponse
+from app.contracts import (
+    AfterSalesExtractionRequest,
+    AfterSalesExtractionResponse,
+    ChatRequest,
+    ChatResponse,
+)
 from app.providers import ModelProviderError, StubModelProvider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
 
 
 app = FastAPI(title="CartPilot")
+default_provider = StubModelProvider()
 app.state.chat_service = ChatService(
     session_store=InMemorySessionStore(),
-    model_provider=StubModelProvider(),
+    model_provider=default_provider,
 )
+app.state.after_sales_extractor = AfterSalesExtractor(default_provider)
 
 
 @app.get("/healthz")
@@ -41,6 +49,33 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse | JS
             content=error_response(
                 code="session_not_found",
                 message=f"session not found: {exc}",
+                retryable=False,
+            ).model_dump(mode="json"),
+        )
+    except ModelProviderError as exc:
+        return JSONResponse(
+            status_code=502,
+            content=error_response(
+                code="model_provider_error",
+                message=str(exc),
+                retryable=True,
+            ).model_dump(mode="json"),
+        )
+
+
+@app.post("/after-sales/extract", response_model=AfterSalesExtractionResponse)
+async def extract_after_sales(
+    request: AfterSalesExtractionRequest, http_request: Request
+) -> AfterSalesExtractionResponse | JSONResponse:
+    extractor: AfterSalesExtractor = http_request.app.state.after_sales_extractor
+    try:
+        return await extractor.extract(request.messages)
+    except AfterSalesExtractionError as exc:
+        return JSONResponse(
+            status_code=422,
+            content=error_response(
+                code="invalid_after_sales_output",
+                message=str(exc),
                 retryable=False,
             ).model_dump(mode="json"),
         )

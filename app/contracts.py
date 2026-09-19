@@ -21,6 +21,40 @@ class ChatRequest(BaseModel):
     stream: bool = False
 
 
+AfterSalesIntent = Literal[
+    "refund",
+    "return",
+    "exchange",
+    "repair",
+    "logistics_issue",
+    "other",
+    "unknown",
+]
+
+
+class AfterSalesInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent: AfterSalesIntent
+    order_id: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
+    requested_action: str | None = Field(default=None, min_length=1)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class AfterSalesExtractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    messages: list[ChatMessage] = Field(min_length=1)
+
+
+class AfterSalesExtractionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1)
+    data: AfterSalesInfo
+
+
 class TokenUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
