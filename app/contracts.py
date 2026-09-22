@@ -1,9 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-MessageRole = Literal["system", "user", "assistant"]
+MessageRole = Literal["system", "user", "assistant", "tool"]
 
 
 class ChatMessage(BaseModel):
@@ -11,6 +11,13 @@ class ChatMessage(BaseModel):
 
     role: MessageRole
     content: str = Field(min_length=1)
+    tool_call_id: str | None = Field(default=None, min_length=1, exclude=True)
+
+    @model_validator(mode="after")
+    def validate_tool_call_id(self) -> "ChatMessage":
+        if self.role == "tool" and self.tool_call_id is None:
+            raise ValueError("tool messages require a tool_call_id")
+        return self
 
 
 class ChatRequest(BaseModel):
