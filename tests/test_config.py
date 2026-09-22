@@ -18,6 +18,9 @@ def test_settings_reads_environment_values(monkeypatch):
         "CHAT_BASE_URL": "https://provider.example/v1",
         "CHAT_API_KEY": "test-key",
         "TOKEN_BUDGET": "750",
+        "DATABASE_URL": "sqlite:///./data/test.db",
+        "DATABASE_TIMEOUT_SECONDS": "3.5",
+        "DATABASE_POOL_SIZE": "3",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -28,4 +31,6 @@ def test_settings_reads_environment_values(monkeypatch):
     assert settings.chat_base_url == "https://provider.example/v1"
     assert settings.chat_api_key == "test-key"
     assert settings.token_budget == 750
-
+    assert settings.database_url == "sqlite:///./data/test.db"
+    assert settings.database_timeout_seconds == 3.5
+    assert settings.database_pool_size == 3
