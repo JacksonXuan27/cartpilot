@@ -1,4 +1,5 @@
 import json
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -7,11 +8,25 @@ from pydantic import BaseModel
 
 from app.contracts import ChatMessage
 from app.providers import ChatModelProvider, ModelResult, ToolCall
-from app.tool_registry import ToolRegistry
+from app.tool_registry import ToolArgumentError, ToolNotFoundError, ToolRegistry
 
 
 class ToolOrchestrationError(RuntimeError):
     pass
+
+
+class ToolExecutionError(ToolOrchestrationError):
+    def __init__(self, tool_name: str, message: str) -> None:
+        self.tool_name = tool_name
+        super().__init__(message)
+
+
+class ToolTimeoutError(ToolExecutionError):
+    def __init__(self, tool_name: str, timeout_seconds: float) -> None:
+        super().__init__(
+            tool_name,
+            f"tool execution timed out: {tool_name} after {timeout_seconds:g}s",
+        )
 
 
 @dataclass(slots=True)
@@ -19,12 +34,15 @@ class ToolOrchestrator:
     model_provider: ChatModelProvider
     tool_registry: ToolRegistry
     max_rounds: int = 4
+    tool_timeout_seconds: float = 5.0
 
     async def complete(self, messages: Sequence[ChatMessage]) -> ModelResult:
         if not messages:
             raise ToolOrchestrationError("at least one message is required")
         if self.max_rounds < 1:
             raise ToolOrchestrationError("max_rounds must be positive")
+        if self.tool_timeout_seconds <= 0:
+            raise ToolOrchestrationError("tool_timeout_seconds must be positive")
 
         conversation = [message.model_copy(deep=True) for message in messages]
         for _ in range(self.max_rounds):
@@ -51,7 +69,22 @@ class ToolOrchestrator:
         )
 
     async def _execute(self, tool_call: ToolCall) -> Any:
-        return await self.tool_registry.execute(tool_call.name, tool_call.arguments)
+        try:
+            async with asyncio.timeout(self.tool_timeout_seconds):
+                return await self.tool_registry.execute(
+                    tool_call.name, tool_call.arguments
+                )
+        except (ToolArgumentError, ToolNotFoundError):
+            raise
+        except TimeoutError as exc:
+            raise ToolTimeoutError(
+                tool_call.name, self.tool_timeout_seconds
+            ) from exc
+        except Exception as exc:
+            raise ToolExecutionError(
+                tool_call.name,
+                f"tool execution failed: {tool_call.name}",
+            ) from exc
 
     @staticmethod
     def _serialize_output(output: Any) -> str:
