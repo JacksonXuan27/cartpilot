@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService
 from app.main import app
-from app.providers import StubModelProvider
+from app.providers import ModelProviderError, StubModelProvider
 from app.sessions import InMemorySessionStore
 
 
@@ -102,3 +102,23 @@ def test_after_sales_endpoint_reports_invalid_model_output():
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_after_sales_output"
+
+
+class FailingModelProvider:
+    async def complete(self, messages, tools=()):
+        raise ModelProviderError("provider unavailable")
+
+    def stream(self, messages):
+        raise NotImplementedError
+
+
+def test_after_sales_endpoint_reports_model_provider_errors():
+    app.state.after_sales_extractor = AfterSalesExtractor(FailingModelProvider())
+
+    response = TestClient(app).post(
+        "/after-sales/extract",
+        json={"messages": [{"role": "user", "content": "Please help"}]},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "model_provider_error"

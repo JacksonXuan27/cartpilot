@@ -5,14 +5,22 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
+from app.embeddings import HashEmbeddingProvider
 from app.contracts import (
     AfterSalesExtractionRequest,
     AfterSalesExtractionResponse,
     ChatRequest,
     ChatResponse,
 )
+from app.knowledge_base import (
+    KnowledgeBaseError,
+    KnowledgeBaseService,
+    KnowledgeQueryRequest,
+    KnowledgeQueryResponse,
+)
 from app.providers import ModelProviderError, StubModelProvider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
+from app.vector_store import InMemoryVectorStore
 
 
 app = FastAPI(title="CartPilot")
@@ -22,6 +30,12 @@ app.state.chat_service = ChatService(
     model_provider=default_provider,
 )
 app.state.after_sales_extractor = AfterSalesExtractor(default_provider)
+default_embedding_provider = HashEmbeddingProvider(dimension=64)
+app.state.knowledge_base_service = KnowledgeBaseService(
+    embedding_provider=default_embedding_provider,
+    vector_store=InMemoryVectorStore(dimension=64),
+    model_provider=default_provider,
+)
 
 
 @app.get("/healthz")
@@ -84,6 +98,24 @@ async def extract_after_sales(
             status_code=502,
             content=error_response(
                 code="model_provider_error",
+                message=str(exc),
+                retryable=True,
+            ).model_dump(mode="json"),
+        )
+
+
+@app.post("/knowledge/query", response_model=KnowledgeQueryResponse)
+async def knowledge_query(
+    request: KnowledgeQueryRequest, http_request: Request
+) -> KnowledgeQueryResponse | JSONResponse:
+    service: KnowledgeBaseService = http_request.app.state.knowledge_base_service
+    try:
+        return await service.query(request)
+    except KnowledgeBaseError as exc:
+        return JSONResponse(
+            status_code=503,
+            content=error_response(
+                code="knowledge_base_error",
                 message=str(exc),
                 retryable=True,
             ).model_dump(mode="json"),
