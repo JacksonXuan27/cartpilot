@@ -1,0 +1,8 @@
+{"query_id":"q01","query":"退款多久到账","relevant_record_ids":["refund-policy-01"]}
+{"query_id":"q02","query":"商品退货条件","relevant_record_ids":["return-policy-01","return-policy-02"]}
+{"query_id":"q03","query":"怎么查快递物流","relevant_record_ids":["shipping-tracking-01"]}
+{"query_id":"q04","query":"订单取消后退款","relevant_record_ids":["cancel-refund-01"]}
+{"query_id":"q05","query":"发票如何申请","relevant_record_ids":["invoice-guide-01"]}
+{"query_id":"q06","query":"优惠券能否叠加","relevant_record_ids":["promotion-policy-01"]}
+{"query_id":"q07","query":"收到破损商品怎么办","relevant_record_ids":["damaged-item-01","after-sales-contact-01"]}
+{"query_id":"q08","query":"修改收货地址","relevant_record_ids":["address-change-01"]}
