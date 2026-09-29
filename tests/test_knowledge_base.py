@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.embeddings import HashEmbeddingProvider
+from app.confidence import ThresholdConfidencePolicy
 from app.knowledge_base import (
     KnowledgeBaseService,
     KnowledgeQueryRequest,
@@ -57,6 +58,31 @@ async def test_knowledge_service_returns_empty_sources_without_documents():
 
     assert response.answer == "暂未找到相关知识。"
     assert response.sources == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_service_refuses_low_confidence_context():
+    service = make_service(reply="不应调用模型生成答案。")
+    service.confidence_policy = ThresholdConfidencePolicy(min_score=0.9)
+    vector = await service.embedding_provider.embed("退款多久到账")
+    await service.vector_store.upsert(
+        [
+            VectorRecord(
+                record_id="low-confidence",
+                document_id=DOCUMENT_ID,
+                chunk_index=0,
+                content="物流状态会按节点更新。",
+                vector=tuple(-value for value in vector),
+                metadata={"source": "shipping.md"},
+            )
+        ]
+    )
+
+    response = await service.query(KnowledgeQueryRequest(query="退款多久到账"))
+
+    assert response.answer == "暂时无法根据知识库确认答案，请补充更多信息。"
+    assert response.sources == []
+    assert service.model_provider.calls == []
 
 
 def test_knowledge_query_endpoint_uses_application_service():

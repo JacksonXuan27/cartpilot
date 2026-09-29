@@ -1,11 +1,12 @@
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.confidence import ConfidencePolicy, ThresholdConfidencePolicy
 from app.contracts import ChatMessage
 from app.embeddings import EmbeddingError, EmbeddingProvider
 from app.providers import ChatModelProvider, ModelProviderError
@@ -50,6 +51,10 @@ class KnowledgeBaseService:
     vector_store: VectorStore
     model_provider: ChatModelProvider
     retrieval_repository: RetrievalRecordRepository | None = None
+    confidence_policy: ConfidencePolicy = field(
+        default_factory=ThresholdConfidencePolicy
+    )
+    low_confidence_message: str = "暂时无法根据知识库确认答案，请补充更多信息。"
 
     async def query(self, request: KnowledgeQueryRequest) -> KnowledgeQueryResponse:
         request_id = str(uuid4())
@@ -57,11 +62,19 @@ class KnowledgeBaseService:
         try:
             query_vector = await self.embedding_provider.embed(request.query)
             matches = await self.vector_store.search(query_vector, request.top_k)
-            answer = await self._generate_answer(request.query, matches)
+            decision = self.confidence_policy.evaluate(matches)
+            if matches and not decision.accepted:
+                answer = self.low_confidence_message
+            else:
+                answer = await self._generate_answer(request.query, matches)
         except (EmbeddingError, VectorStoreError, ModelProviderError) as exc:
             raise KnowledgeBaseError(str(exc)) from exc
 
-        sources = [self._to_source(match) for match in matches]
+        sources = (
+            [self._to_source(match) for match in matches]
+            if not matches or decision.accepted
+            else []
+        )
         if self.retrieval_repository is not None:
             await self.retrieval_repository.save(
                 RetrievalRecord(
