@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Mapping
+from typing import Mapping, Protocol, runtime_checkable
 from uuid import uuid4
 
 
@@ -74,3 +74,15 @@ class WorkflowRuntimeContext:
         ):
             raise WorkflowError("metadata must contain non-empty string keys and string values")
         self.metadata = copied_metadata
+
+
+@runtime_checkable
+class WorkflowNode(Protocol):
+    name: str
+
+    async def execute(
+        self,
+        state: WorkflowState,
+        context: WorkflowRuntimeContext,
+    ) -> WorkflowState:
+        """Apply one workflow step and return the updated state."""

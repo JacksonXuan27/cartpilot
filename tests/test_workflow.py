@@ -4,6 +4,7 @@ import pytest
 
 from app.workflow import (
     WorkflowError,
+    WorkflowNode,
     WorkflowRuntimeContext,
     WorkflowState,
     WorkflowStatus,
@@ -58,6 +59,34 @@ def test_workflow_runtime_context_copies_metadata():
     metadata["source"] = "changed"
 
     assert context.metadata == {"source": "chat"}
+
+
+@pytest.mark.asyncio
+async def test_workflow_node_protocol_accepts_async_state_transformer():
+    class AddIntentNode:
+        name = "add-intent"
+
+        async def execute(self, state, context):
+            assert context.request_id == "request-123"
+            state.data["intent"] = "refund"
+            return state
+
+    node = AddIntentNode()
+    state = WorkflowState()
+    context = WorkflowRuntimeContext(request_id="request-123")
+
+    assert isinstance(node, WorkflowNode)
+    result = await node.execute(state, context)
+
+    assert result is state
+    assert result.data["intent"] == "refund"
+
+
+def test_workflow_node_protocol_rejects_objects_without_execute_method():
+    class InvalidNode:
+        name = "invalid"
+
+    assert not isinstance(InvalidNode(), WorkflowNode)
 
 
 @pytest.mark.parametrize(
