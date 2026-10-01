@@ -41,6 +41,16 @@ class AfterSalesIntentNode:
             state.status = WorkflowStatus.FAILED
             raise error from exc
 
+        resolved_context = state.data.get("resolved_order_context")
+        if (
+            extraction.data.order_id is None
+            and isinstance(resolved_context, dict)
+            and isinstance(resolved_context.get("order_id"), str)
+        ):
+            extraction.data.order_id = resolved_context["order_id"]
+            state.data["after_sales_order_id_source"] = "conversation_context"
+        elif extraction.data.order_id is not None:
+            state.data["after_sales_order_id_source"] = "model_extraction"
         state.data["after_sales_intent"] = extraction.data.intent
         state.data["after_sales_info"] = extraction.data.model_dump(mode="json")
         state.data["after_sales_extraction_request_id"] = extraction.request_id

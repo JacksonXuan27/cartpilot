@@ -3,6 +3,7 @@ import pytest
 from app.after_sales import AfterSalesExtractor
 from app.after_sales_intent import AfterSalesIntentNode, AfterSalesIntentNodeError
 from app.contracts import ChatMessage
+from app.context_reference_resolution import ContextReferenceResolutionNode
 from app.providers import StubModelProvider
 from app.tool_registry import ToolRegistry
 from app.workflow import WorkflowRuntimeContext, WorkflowState, WorkflowStatus
@@ -67,6 +68,125 @@ async def test_after_sales_intent_node_rejects_missing_messages():
         await node.execute(state, WorkflowRuntimeContext(request_id="request-3"))
 
     assert state.status is WorkflowStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_context_reference_resolution_uses_latest_prior_order_id():
+    state = WorkflowState(
+        data={
+            "intent": "refund_return",
+            "messages": [
+                ChatMessage(role="user", content="查询订单 ORD-1001"),
+                ChatMessage(role="assistant", content="查到了 ORD-1001"),
+                ChatMessage(role="user", content="另一个订单 ORD-2002 有物流吗"),
+                ChatMessage(role="assistant", content="ORD-2002 正在配送"),
+                ChatMessage(role="user", content="这个订单我想退款"),
+            ],
+        }
+    )
+
+    await ContextReferenceResolutionNode().execute(
+        state,
+        WorkflowRuntimeContext(request_id="request-context-1", run_id="run-context-1"),
+    )
+
+    assert state.data["context_reference_resolution"] == "resolved"
+    assert state.data["resolved_order_context"] == {
+        "order_id": "ORD-2002",
+        "reference": "这个订单",
+        "source_message_index": 3,
+        "source_role": "assistant",
+    }
+    assert state.data["messages"][-1].content == "这个订单我想退款"
+
+
+@pytest.mark.asyncio
+async def test_context_reference_resolution_does_not_guess_without_history():
+    state = WorkflowState(
+        data={
+            "intent": "after_sales",
+            "messages": [ChatMessage(role="user", content="它有质量问题")],
+        }
+    )
+
+    await ContextReferenceResolutionNode().execute(
+        state,
+        WorkflowRuntimeContext(request_id="request-context-2"),
+    )
+
+    assert state.data["context_reference_resolution"] == "no_prior_order_id"
+    assert state.data["unresolved_order_reference"] == "它"
+    assert "resolved_order_context" not in state.data
+
+
+@pytest.mark.asyncio
+async def test_context_reference_resolution_preserves_explicit_current_order_id():
+    state = WorkflowState(
+        data={
+            "intent": "refund_return",
+            "messages": [
+                ChatMessage(role="user", content="订单 ORD-1001 有问题"),
+                ChatMessage(role="user", content="这个订单号是 ORD-2002，我要退款"),
+            ],
+        }
+    )
+
+    await ContextReferenceResolutionNode().execute(
+        state,
+        WorkflowRuntimeContext(request_id="request-context-3"),
+    )
+
+    assert state.data["context_reference_resolution"] == "explicit_order_id"
+    assert "resolved_order_context" not in state.data
+
+
+@pytest.mark.asyncio
+async def test_context_reference_resolution_does_not_guess_between_prior_orders():
+    state = WorkflowState(
+        data={
+            "intent": "refund_return",
+            "messages": [
+                ChatMessage(
+                    role="assistant",
+                    content="订单 ORD-1001 和 ORD-2002 都符合条件。",
+                ),
+                ChatMessage(role="user", content="这个订单我要退款"),
+            ],
+        }
+    )
+
+    await ContextReferenceResolutionNode().execute(
+        state,
+        WorkflowRuntimeContext(request_id="request-context-4"),
+    )
+
+    assert state.data["context_reference_resolution"] == "ambiguous_prior_order_ids"
+    assert state.data["ambiguous_order_ids"] == ["ORD-1001", "ORD-2002"]
+    assert "resolved_order_context" not in state.data
+
+
+@pytest.mark.asyncio
+async def test_workflow_fills_missing_extracted_order_id_from_resolved_context():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":null,"reason":"damaged",'
+            '"requested_action":"refund","confidence":0.9}'
+        )
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry())
+
+    state = await runtime.run(
+        [
+            ChatMessage(role="user", content="订单 ORD-3003 到货了"),
+            ChatMessage(role="assistant", content="收到，订单 ORD-3003"),
+            ChatMessage(role="user", content="这个订单坏了想退款"),
+        ]
+    )
+
+    assert state.status is WorkflowStatus.COMPLETED
+    assert state.data["resolved_order_context"]["order_id"] == "ORD-3003"
+    assert state.data["after_sales_info"]["order_id"] == "ORD-3003"
+    assert state.data["after_sales_order_id_source"] == "conversation_context"
 
 
 @pytest.mark.asyncio
