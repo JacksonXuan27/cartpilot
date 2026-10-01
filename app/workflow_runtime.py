@@ -4,6 +4,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.after_sales import AfterSalesExtractor
+from app.after_sales_intent import AfterSalesIntentNode
 from app.contracts import ChatMessage
 from app.intent_routing import IntentRouterNode
 from app.providers import ChatModelProvider, StubModelProvider
@@ -44,7 +46,11 @@ class WorkflowRuntime:
 
     def __post_init__(self) -> None:
         if self.nodes is None:
-            self.nodes = (IntentRouterNode(), ReactLoopNode(self.model_provider, self.tool_registry))
+            self.nodes = (
+                IntentRouterNode(),
+                AfterSalesIntentNode(AfterSalesExtractor(self.model_provider)),
+                ReactLoopNode(self.model_provider, self.tool_registry),
+            )
         if not self.nodes:
             raise WorkflowRuntimeError("workflow requires at least one node")
         names: list[str] = []
