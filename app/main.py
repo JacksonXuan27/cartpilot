@@ -21,6 +21,13 @@ from app.knowledge_base import (
 from app.providers import ModelProviderError, StubModelProvider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
 from app.vector_store import InMemoryVectorStore
+from app.workflow_runtime import (
+    WorkflowRunRequest,
+    WorkflowRunResponse,
+    WorkflowRuntime,
+    default_workflow_runtime,
+    workflow_response,
+)
 
 
 app = FastAPI(title="CartPilot")
@@ -36,11 +43,21 @@ app.state.knowledge_base_service = KnowledgeBaseService(
     vector_store=InMemoryVectorStore(dimension=64),
     model_provider=default_provider,
 )
+app.state.workflow_runtime = default_workflow_runtime()
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"service": "cartpilot", "status": "ok"}
+
+
+@app.post("/workflow/run", response_model=WorkflowRunResponse)
+async def workflow_run(
+    request: WorkflowRunRequest, http_request: Request
+) -> WorkflowRunResponse:
+    runtime: WorkflowRuntime = http_request.app.state.workflow_runtime
+    state = await runtime.run(request.messages, session_id=request.session_id)
+    return workflow_response(state)
 
 
 @app.post("/chat", response_model=ChatResponse)
