@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.after_sales import AfterSalesExtractor
 from app.after_sales_intent import AfterSalesIntentNode
+from app.after_sales_routing import AfterSalesRoutingNode
 from app.contracts import ChatMessage
 from app.context_reference_resolution import ContextReferenceResolutionNode
 from app.intent_routing import IntentRouterNode
@@ -51,6 +52,7 @@ class WorkflowRuntime:
                 IntentRouterNode(),
                 ContextReferenceResolutionNode(),
                 AfterSalesIntentNode(AfterSalesExtractor(self.model_provider)),
+                AfterSalesRoutingNode(),
                 ReactLoopNode(self.model_provider, self.tool_registry),
             )
         if not self.nodes:

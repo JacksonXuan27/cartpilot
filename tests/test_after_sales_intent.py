@@ -2,6 +2,7 @@ import pytest
 
 from app.after_sales import AfterSalesExtractor
 from app.after_sales_intent import AfterSalesIntentNode, AfterSalesIntentNodeError
+from app.after_sales_routing import AfterSalesRoutingError, AfterSalesRoutingNode
 from app.contracts import ChatMessage
 from app.context_reference_resolution import ContextReferenceResolutionNode
 from app.providers import StubModelProvider
@@ -187,6 +188,99 @@ async def test_workflow_fills_missing_extracted_order_id_from_resolved_context()
     assert state.data["resolved_order_context"]["order_id"] == "ORD-3003"
     assert state.data["after_sales_info"]["order_id"] == "ORD-3003"
     assert state.data["after_sales_order_id_source"] == "conversation_context"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("after_sales_intent", "expected_route", "requires_confirmation"),
+    [
+        ("refund", "refund_flow", True),
+        ("return", "return_flow", True),
+        ("exchange", "exchange_flow", True),
+        ("repair", "repair_flow", False),
+        ("logistics_issue", "logistics_flow", False),
+    ],
+)
+async def test_after_sales_routing_selects_scenario_route(
+    after_sales_intent: str,
+    expected_route: str,
+    requires_confirmation: bool,
+):
+    state = WorkflowState(
+        data={
+            "intent": "after_sales",
+            "after_sales_intent": after_sales_intent,
+        }
+    )
+
+    result = await AfterSalesRoutingNode().execute(
+        state,
+        WorkflowRuntimeContext(request_id="request-route-1", run_id="run-route-1"),
+    )
+
+    assert result.status is WorkflowStatus.RUNNING
+    assert result.current_node == "after-sales-routing"
+    assert result.data["after_sales_scenario"] == after_sales_intent
+    assert result.data["after_sales_route"] == expected_route
+    assert result.data["route"] == expected_route
+    assert result.data["after_sales_requires_confirmation"] is requires_confirmation
+    assert result.data["after_sales_routing"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_sales_intent", ["other", "unknown", "future_intent"])
+async def test_after_sales_routing_sends_uncertain_intents_to_manual_review(
+    after_sales_intent: str,
+):
+    state = WorkflowState(
+        data={
+            "intent": "refund_return",
+            "after_sales_intent": after_sales_intent,
+        }
+    )
+
+    await AfterSalesRoutingNode().execute(
+        state,
+        WorkflowRuntimeContext(request_id="request-route-2"),
+    )
+
+    assert state.data["after_sales_route"] == "manual_review"
+    assert state.data["after_sales_requires_confirmation"] is True
+    assert state.data["after_sales_handoff_reason"] == "unrecognized_after_sales_intent"
+
+
+@pytest.mark.asyncio
+async def test_after_sales_routing_requires_extracted_intent():
+    state = WorkflowState(data={"intent": "after_sales"})
+
+    with pytest.raises(AfterSalesRoutingError, match="intent is required"):
+        await AfterSalesRoutingNode().execute(
+            state,
+            WorkflowRuntimeContext(request_id="request-route-3"),
+        )
+
+    assert state.status is WorkflowStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_workflow_runs_after_sales_routing_before_reply():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"repair","order_id":"ORD-4004",'
+            '"reason":"broken","requested_action":"repair",'
+            '"confidence":0.86}'
+        )
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry())
+
+    state = await runtime.run(
+        [ChatMessage(role="user", content="订单 ORD-4004 坏了需要维修")]
+    )
+
+    assert state.status is WorkflowStatus.COMPLETED
+    assert state.data["after_sales_route"] == "repair_flow"
+    assert state.data["route"] == "repair_flow"
+    assert state.data["after_sales_requires_confirmation"] is False
 
 
 @pytest.mark.asyncio
