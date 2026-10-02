@@ -20,7 +20,33 @@ def test_workflow_run_returns_execution_summary():
     assert payload["intent"] == "smalltalk"
     assert payload["route"] == "fallback_script"
     assert payload["iterations"] == 1
+    assert payload["confirmation_required"] is False
     assert payload["run_id"] and payload["workflow_id"]
+
+
+def test_workflow_run_returns_pending_refund_confirmation():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-6006",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        )
+    )
+    app.state.workflow_runtime = WorkflowRuntime(provider, ToolRegistry())
+
+    response = TestClient(app).post("/workflow/run", json={
+        "messages": [
+            {"role": "user", "content": "ORD-6006 到货破损，我要退款"}
+        ],
+    })
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "awaiting_confirmation"
+    assert payload["confirmation_required"] is True
+    assert payload["confirmation_id"]
+    assert payload["confirmation_details"]["order_id"] == "ORD-6006"
+    assert len(provider.calls) == 1
 
 
 def test_workflow_run_validates_request():

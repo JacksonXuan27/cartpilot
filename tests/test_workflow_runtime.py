@@ -46,6 +46,7 @@ async def test_runtime_runs_router_and_react_nodes():
     assert state.data["answer"] == "回复内容"
     assert state.data["session_id"] == "session-1"
     assert state.data["react_iterations"] == 1
+    assert state.data["confirmation_required"] is False
 
 
 @pytest.mark.anyio

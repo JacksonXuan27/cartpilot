@@ -12,6 +12,7 @@ from app.context_reference_resolution import ContextReferenceResolutionNode
 from app.intent_routing import IntentRouterNode
 from app.providers import ChatModelProvider, StubModelProvider
 from app.react_loop import ReactLoopNode
+from app.refund_interruption import RefundInterruptionNode
 from app.tool_registry import ToolRegistry
 from app.workflow import WorkflowNode, WorkflowRuntimeContext, WorkflowState, WorkflowStatus
 
@@ -38,6 +39,9 @@ class WorkflowRunResponse(BaseModel):
     route: str | None = None
     iterations: int = Field(default=0, ge=0)
     error: dict[str, object] | None = None
+    confirmation_required: bool = False
+    confirmation_id: str | None = None
+    confirmation_details: dict[str, object] | None = None
 
 
 @dataclass(slots=True)
@@ -53,6 +57,7 @@ class WorkflowRuntime:
                 ContextReferenceResolutionNode(),
                 AfterSalesIntentNode(AfterSalesExtractor(self.model_provider)),
                 AfterSalesRoutingNode(),
+                RefundInterruptionNode(),
                 ReactLoopNode(self.model_provider, self.tool_registry),
             )
         if not self.nodes:
@@ -98,6 +103,8 @@ class WorkflowRuntime:
                     **({"iteration": exc.iteration} if isinstance(getattr(exc, "iteration", None), int) else {}),
                 }
                 break
+            if state.status is WorkflowStatus.AWAITING_CONFIRMATION:
+                break
         state.data["workflow_run_id"] = context.run_id
         return state
 
@@ -113,6 +120,17 @@ def workflow_response(state: WorkflowState) -> WorkflowRunResponse:
         route=state.data.get("route") if isinstance(state.data.get("route"), str) else None,
         iterations=int(state.data.get("react_iterations", 0)),
         error=error if isinstance(error, dict) else None,
+        confirmation_required=state.data.get("confirmation_required") is True,
+        confirmation_id=(
+            state.data.get("confirmation_id")
+            if isinstance(state.data.get("confirmation_id"), str)
+            else None
+        ),
+        confirmation_details=(
+            state.data.get("confirmation_details")
+            if isinstance(state.data.get("confirmation_details"), dict)
+            else None
+        ),
     )
 
 

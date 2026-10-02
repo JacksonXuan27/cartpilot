@@ -5,6 +5,7 @@ from app.after_sales_intent import AfterSalesIntentNode, AfterSalesIntentNodeErr
 from app.after_sales_routing import AfterSalesRoutingError, AfterSalesRoutingNode
 from app.contracts import ChatMessage
 from app.context_reference_resolution import ContextReferenceResolutionNode
+from app.refund_interruption import RefundInterruptionNode
 from app.providers import StubModelProvider
 from app.tool_registry import ToolRegistry
 from app.workflow import WorkflowRuntimeContext, WorkflowState, WorkflowStatus
@@ -184,10 +185,11 @@ async def test_workflow_fills_missing_extracted_order_id_from_resolved_context()
         ]
     )
 
-    assert state.status is WorkflowStatus.COMPLETED
+    assert state.status is WorkflowStatus.AWAITING_CONFIRMATION
     assert state.data["resolved_order_context"]["order_id"] == "ORD-3003"
     assert state.data["after_sales_info"]["order_id"] == "ORD-3003"
     assert state.data["after_sales_order_id_source"] == "conversation_context"
+    assert state.data["confirmation_details"]["order_id"] == "ORD-3003"
 
 
 @pytest.mark.asyncio
@@ -284,6 +286,52 @@ async def test_workflow_runs_after_sales_routing_before_reply():
 
 
 @pytest.mark.asyncio
+async def test_refund_interruption_pauses_before_agent_tools_run():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-5005",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.93}'
+        ),
+        tool_call_rounds=[],
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry())
+
+    state = await runtime.run(
+        [ChatMessage(role="user", content="订单 ORD-5005 到货破损，我要退款")]
+    )
+
+    assert state.status is WorkflowStatus.AWAITING_CONFIRMATION
+    assert state.current_node == "refund-confirmation-interrupt"
+    assert state.data["confirmation_required"] is True
+    assert state.data["confirmation_status"] == "pending"
+    assert state.data["confirmation_details"] == {
+        "scenario": "refund",
+        "order_id": "ORD-5005",
+        "reason": "damaged",
+        "requested_action": "refund",
+    }
+    assert len(provider.calls) == 1
+    assert state.data["answer"] == "请确认是否继续此售后申请。"
+
+
+@pytest.mark.asyncio
+async def test_refund_interruption_node_leaves_non_confirming_flow_running():
+    state = WorkflowState(
+        data={"after_sales_requires_confirmation": False}
+    )
+
+    await RefundInterruptionNode().execute(
+        state,
+        WorkflowRuntimeContext(request_id="request-refund-interrupt-1"),
+    )
+
+    assert state.status is WorkflowStatus.RUNNING
+    assert state.data["confirmation_required"] is False
+    assert "confirmation_id" not in state.data
+
+
+@pytest.mark.asyncio
 async def test_workflow_runtime_surfaces_invalid_after_sales_classification():
     runtime = WorkflowRuntime(
         StubModelProvider(reply="not JSON"),
@@ -300,7 +348,7 @@ async def test_workflow_runtime_surfaces_invalid_after_sales_classification():
 
 
 @pytest.mark.asyncio
-async def test_workflow_runtime_runs_after_sales_classification_before_reply():
+async def test_workflow_runtime_pauses_return_for_confirmation_before_reply():
     provider = StubModelProvider(
         reply=(
             '{"intent":"return","order_id":null,"reason":"wrong size",'
@@ -313,7 +361,8 @@ async def test_workflow_runtime_runs_after_sales_classification_before_reply():
         [ChatMessage(role="user", content="尺码不合适，想退货")]
     )
 
-    assert state.status is WorkflowStatus.COMPLETED
+    assert state.status is WorkflowStatus.AWAITING_CONFIRMATION
     assert state.data["after_sales_intent"] == "return"
-    assert len(provider.calls) == 2
-    assert state.data["answer"] == provider.reply
+    assert state.data["after_sales_route"] == "return_flow"
+    assert state.data["confirmation_required"] is True
+    assert len(provider.calls) == 1

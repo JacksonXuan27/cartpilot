@@ -12,6 +12,7 @@ class WorkflowError(ValueError):
 class WorkflowStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     COMPLETED = "completed"
     FAILED = "failed"
 
