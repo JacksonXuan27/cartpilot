@@ -75,6 +75,34 @@ def test_workflow_resume_accepts_confirmation_and_returns_final_state():
     assert resumed.json()["confirmation_required"] is False
 
 
+def test_workflow_resume_rejects_confirmation_without_calling_model_again():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-7009",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        )
+    )
+    app.state.workflow_runtime = WorkflowRuntime(provider, ToolRegistry())
+    client = TestClient(app)
+    paused = client.post("/workflow/run", json={
+        "messages": [
+            {"role": "user", "content": "ORD-7009 到货破损，我要退款"}
+        ],
+    }).json()
+
+    rejected = client.post("/workflow/resume", json={
+        "confirmation_id": paused["confirmation_id"],
+        "confirmed": False,
+    })
+
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "completed"
+    assert rejected.json()["answer"] == "已取消此售后申请。"
+    assert rejected.json()["confirmation_required"] is False
+    assert len(provider.calls) == 1
+
+
 def test_workflow_resume_rejects_duplicate_confirmation():
     provider = StubModelProvider(
         reply=(

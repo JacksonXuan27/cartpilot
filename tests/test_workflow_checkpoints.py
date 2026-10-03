@@ -16,6 +16,18 @@ from app.workflow_checkpoints import (
 from app.workflow_runtime import WorkflowRuntime
 
 
+class FailOnResumeProvider(StubModelProvider):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.resume_failures = 0
+
+    async def complete(self, messages, tools=()):
+        if self.calls:
+            self.resume_failures += 1
+            raise RuntimeError("model unavailable during resume")
+        return await super().complete(messages, tools)
+
+
 def make_checkpoint() -> WorkflowCheckpoint:
     return WorkflowCheckpoint(
         confirmation_id="confirmation-1",
@@ -150,3 +162,83 @@ async def test_workflow_rejects_confirmation_without_running_model_again():
     assert rejected.data["confirmation_status"] == "rejected"
     assert rejected.data["answer"] == "已取消此售后申请。"
     assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_marks_failed_resume_as_terminal_and_rejects_retry():
+    provider = FailOnResumeProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-1003",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        )
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry())
+    paused = await runtime.run(
+        [ChatMessage(role="user", content="ORD-1003 到货破损，我要退款")]
+    )
+
+    failed = await runtime.resume(
+        str(paused.data["confirmation_id"]),
+        confirmed=True,
+    )
+
+    assert failed.status is WorkflowStatus.FAILED
+    assert failed.data["confirmation_status"] == "confirmed"
+    assert failed.data["confirmation_required"] is False
+    assert failed.data["error"]["code"] == "react_loop_failed"
+    assert failed.data["error"]["message"] == (
+        "react loop failed: model unavailable during resume"
+    )
+    assert provider.resume_failures == 1
+
+    with pytest.raises(WorkflowCheckpointAlreadyResumedError):
+        await runtime.resume(
+            str(paused.data["confirmation_id"]),
+            confirmed=True,
+        )
+
+    assert provider.resume_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_sqlite_store_keeps_failed_resume_terminal_after_reopen(tmp_path: Path):
+    database_path = tmp_path / "workflow.db"
+    provider = FailOnResumeProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-1004",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        )
+    )
+    first_store = SQLiteWorkflowCheckpointStore(
+        DatabaseManager(f"sqlite:///{database_path}")
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry(), checkpoint_store=first_store)
+    paused = await runtime.run(
+        [ChatMessage(role="user", content="ORD-1004 到货破损，我要退款")]
+    )
+
+    failed = await runtime.resume(
+        str(paused.data["confirmation_id"]),
+        confirmed=True,
+    )
+    assert failed.status is WorkflowStatus.FAILED
+    first_store.close()
+
+    reopened_store = SQLiteWorkflowCheckpointStore(
+        DatabaseManager(f"sqlite:///{database_path}")
+    )
+    reopened_runtime = WorkflowRuntime(
+        StubModelProvider(reply="不应再次调用模型"),
+        ToolRegistry(),
+        checkpoint_store=reopened_store,
+    )
+
+    with pytest.raises(WorkflowCheckpointAlreadyResumedError):
+        await reopened_runtime.resume(
+            str(paused.data["confirmation_id"]),
+            confirmed=True,
+        )
+
+    reopened_store.close()
