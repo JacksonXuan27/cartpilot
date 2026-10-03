@@ -55,7 +55,11 @@ class AfterSalesExtractor:
                 "model response is not valid after-sales JSON"
             ) from exc
 
-        return AfterSalesExtractionResponse(request_id=str(uuid4()), data=info)
+        return AfterSalesExtractionResponse(
+            request_id=str(uuid4()),
+            data=info,
+            usage=result.usage,
+        )
 
 
 def _extract_json(content: str) -> str:

@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.after_sales import AfterSalesExtractor
 from app.after_sales_intent import AfterSalesIntentNode
 from app.after_sales_routing import AfterSalesRoutingNode
-from app.contracts import ChatMessage
+from app.contracts import ChatMessage, TokenUsage
 from app.context_reference_resolution import ContextReferenceResolutionNode
 from app.intent_routing import IntentRouterNode
 from app.providers import ChatModelProvider, StubModelProvider
@@ -53,6 +53,8 @@ class WorkflowRunResponse(BaseModel):
     route: str | None = None
     iterations: int = Field(default=0, ge=0)
     error: dict[str, object] | None = None
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    token_budget: int | None = None
     confirmation_required: bool = False
     confirmation_id: str | None = None
     confirmation_details: dict[str, object] | None = None
@@ -64,8 +66,11 @@ class WorkflowRuntime:
     tool_registry: ToolRegistry
     nodes: tuple[WorkflowNode, ...] | None = None
     checkpoint_store: WorkflowCheckpointStore | None = None
+    token_budget: int | None = 2000
 
     def __post_init__(self) -> None:
+        if self.token_budget is not None and self.token_budget < 1:
+            raise WorkflowRuntimeError("token_budget must be positive")
         if self.nodes is None:
             self.nodes = (
                 IntentRouterNode(),
@@ -105,12 +110,14 @@ class WorkflowRuntime:
         context = WorkflowRuntimeContext(
             request_id=request_id or str(uuid4()),
             session_id=session_id,
+            token_budget=self.token_budget,
         )
         state = WorkflowState(data={
             "messages": [message.model_copy(deep=True) for message in messages],
             "session_id": session_id,
             "request_id": context.request_id,
         })
+        context.apply_usage(state)
         for node in self.nodes or ():
             try:
                 state = await node.execute(state, context)
@@ -170,7 +177,12 @@ class WorkflowRuntime:
                 if isinstance(state.data.get("session_id"), str)
                 else None
             ),
+            token_budget=self.token_budget,
+            token_usage=TokenUsage.model_validate(
+                state.data.get("token_usage", {})
+            ),
         )
+        context.apply_usage(state)
         checkpoint.run_id = context.run_id
         state.data["workflow_run_id"] = context.run_id
         state.data["confirmation_required"] = False
@@ -244,6 +256,12 @@ def workflow_response(state: WorkflowState) -> WorkflowRunResponse:
         route=state.data.get("route") if isinstance(state.data.get("route"), str) else None,
         iterations=int(state.data.get("react_iterations", 0)),
         error=error if isinstance(error, dict) else None,
+        token_usage=TokenUsage.model_validate(state.data.get("token_usage", {})),
+        token_budget=(
+            state.data.get("token_budget")
+            if isinstance(state.data.get("token_budget"), int)
+            else None
+        ),
         confirmation_required=state.data.get("confirmation_required") is True,
         confirmation_id=(
             state.data.get("confirmation_id")

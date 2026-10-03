@@ -5,7 +5,12 @@ from pydantic import ValidationError
 
 from app.after_sales import AfterSalesExtractor
 from app.contracts import ChatMessage
-from app.workflow import WorkflowRuntimeContext, WorkflowState, WorkflowStatus
+from app.workflow import (
+    WorkflowRuntimeContext,
+    WorkflowState,
+    WorkflowStatus,
+    WorkflowTokenBudgetExceededError,
+)
 
 
 class AfterSalesIntentNodeError(RuntimeError):
@@ -33,6 +38,12 @@ class AfterSalesIntentNode:
         try:
             messages = _coerce_messages(state.data.get("messages"))
             extraction = await self.extractor.extract(messages)
+            context.record_usage(extraction.usage)
+            context.apply_usage(state)
+        except WorkflowTokenBudgetExceededError:
+            context.apply_usage(state)
+            state.status = WorkflowStatus.FAILED
+            raise
         except AfterSalesIntentNodeError:
             state.status = WorkflowStatus.FAILED
             raise

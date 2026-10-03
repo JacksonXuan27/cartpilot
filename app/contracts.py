@@ -55,19 +55,20 @@ class AfterSalesExtractionRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1)
 
 
-class AfterSalesExtractionResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    request_id: str = Field(min_length=1)
-    data: AfterSalesInfo
-
-
 class TokenUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
+
+
+class AfterSalesExtractionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1)
+    data: AfterSalesInfo
+    usage: TokenUsage | None = None
 
 
 class ChatResponse(BaseModel):

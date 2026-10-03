@@ -3,7 +3,7 @@ from collections.abc import Mapping
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.contracts import ChatMessage
+from app.contracts import ChatMessage, TokenUsage
 from app.intent_routing import IntentRouterNode
 from app.providers import ModelResult, StubModelProvider, ToolCall
 from app.react_loop import ReactLoopNode
@@ -50,6 +50,25 @@ async def test_runtime_runs_router_and_react_nodes():
 
 
 @pytest.mark.anyio
+async def test_runtime_exposes_token_usage_and_budget():
+    provider = StubModelProvider(
+        reply="回复内容",
+        usage=TokenUsage(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry(), token_budget=5)
+
+    state = await runtime.run([ChatMessage(role="user", content="你好")])
+
+    assert state.status is WorkflowStatus.COMPLETED
+    assert state.data["token_usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+    }
+    assert state.data["token_budget"] == 5
+
+
+@pytest.mark.anyio
 async def test_runtime_completes_normal_tool_call_path():
     provider = StubModelProvider(
         reply="工具查询完成",
@@ -65,6 +84,34 @@ async def test_runtime_completes_normal_tool_call_path():
     assert state.data["route"] == "business"
     assert state.data["react_iterations"] == 2
     assert state.data["tool_history"][0]["result"] == {"echo": "hello"}
+
+
+@pytest.mark.anyio
+async def test_runtime_shares_budget_between_after_sales_and_resume():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-TOKEN",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        ),
+        usage=TokenUsage(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry(), token_budget=10)
+
+    paused = await runtime.run(
+        [ChatMessage(role="user", content="ORD-TOKEN 到货破损，我要退款")]
+    )
+    failed = await runtime.resume(
+        str(paused.data["confirmation_id"]),
+        confirmed=True,
+    )
+
+    assert paused.status is WorkflowStatus.AWAITING_CONFIRMATION
+    assert paused.data["token_usage"]["total_tokens"] == 6
+    assert failed.status is WorkflowStatus.FAILED
+    assert failed.data["error"]["code"] == "token_budget_exceeded"
+    assert failed.data["token_usage"]["total_tokens"] == 12
+    assert len(provider.calls) == 2
 
 
 @pytest.mark.anyio

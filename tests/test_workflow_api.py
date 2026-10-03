@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.contracts import TokenUsage
 from app.main import app
 from app.providers import StubModelProvider
 from app.tool_registry import ToolRegistry
@@ -22,6 +23,31 @@ def test_workflow_run_returns_execution_summary():
     assert payload["iterations"] == 1
     assert payload["confirmation_required"] is False
     assert payload["run_id"] and payload["workflow_id"]
+
+
+def test_workflow_run_returns_token_usage_and_budget():
+    provider = StubModelProvider(
+        reply="可以帮你处理。",
+        usage=TokenUsage(prompt_tokens=5, completion_tokens=3, total_tokens=8),
+    )
+    app.state.workflow_runtime = WorkflowRuntime(
+        provider,
+        ToolRegistry(),
+        token_budget=8,
+    )
+
+    response = TestClient(app).post("/workflow/run", json={
+        "messages": [{"role": "user", "content": "你好"}],
+    })
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["token_budget"] == 8
+    assert payload["token_usage"] == {
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8,
+    }
 
 
 def test_workflow_run_returns_pending_refund_confirmation():
