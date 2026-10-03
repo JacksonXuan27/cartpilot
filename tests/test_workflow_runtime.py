@@ -4,6 +4,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts import ChatMessage, TokenUsage
+from app.context_layers import ContextLayerManager
 from app.intent_routing import IntentRouterNode
 from app.providers import ModelResult, StubModelProvider, ToolCall
 from app.react_loop import ReactLoopNode
@@ -66,6 +67,41 @@ async def test_runtime_exposes_token_usage_and_budget():
         "total_tokens": 5,
     }
     assert state.data["token_budget"] == 5
+
+
+@pytest.mark.anyio
+async def test_runtime_uses_context_layers_for_model_prompt_and_preserves_history():
+    provider = StubModelProvider(reply="acknowledged")
+    context_layers = ContextLayerManager(short_term_limit=2, long_term_limit=1)
+    runtime = WorkflowRuntime(
+        provider,
+        ToolRegistry(),
+        nodes=(ReactLoopNode(provider, ToolRegistry()),),
+        context_layer_manager=context_layers,
+    )
+
+    messages = [
+        ChatMessage(role="system", content="system-rule"),
+        ChatMessage(role="user", content="message-1"),
+        ChatMessage(role="assistant", content="message-2"),
+        ChatMessage(role="user", content="message-3"),
+        ChatMessage(role="assistant", content="message-4"),
+        ChatMessage(role="user", content="message-5"),
+    ]
+    state = await runtime.run(messages)
+
+    assert [message.content for message in provider.calls[0]] == [
+        "system-rule",
+        "message-3",
+        "message-4",
+        "message-5",
+    ]
+    assert len(state.data["messages"]) == len(messages) + 1
+    assert [message.content for message in state.data["context_layers"]["short_term"]] == [
+        "message-4",
+        "message-5",
+    ]
+    assert state.data["context_layers"]["omitted_message_count"] == 2
 
 
 @pytest.mark.anyio

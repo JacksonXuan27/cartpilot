@@ -63,8 +63,9 @@ class ReactLoopNode:
 
             for iteration in range(1, self.max_iterations + 1):
                 state.data["react_iterations"] = iteration
+                prompt_messages = context.prepare_context(state, messages)
                 result = await self.model_provider.complete(
-                    messages,
+                    prompt_messages,
                     tools=self.tool_registry.definitions(),
                 )
                 if result.usage is not None:

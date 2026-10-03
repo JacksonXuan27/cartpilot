@@ -37,7 +37,9 @@ class AfterSalesIntentNode:
         state.data.pop("after_sales_intent_skipped", None)
         try:
             messages = _coerce_messages(state.data.get("messages"))
-            extraction = await self.extractor.extract(messages)
+            extraction = await self.extractor.extract(
+                context.prepare_context(state, messages)
+            )
             context.record_usage(extraction.usage)
             context.apply_usage(state)
         except WorkflowTokenBudgetExceededError:
