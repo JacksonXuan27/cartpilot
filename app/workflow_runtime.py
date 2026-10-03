@@ -14,6 +14,13 @@ from app.providers import ChatModelProvider, StubModelProvider
 from app.react_loop import ReactLoopNode
 from app.refund_interruption import RefundInterruptionNode
 from app.tool_registry import ToolRegistry
+from app.workflow_checkpoints import (
+    InMemoryWorkflowCheckpointStore,
+    SQLiteWorkflowCheckpointStore,
+    WorkflowCheckpoint,
+    WorkflowCheckpointStore,
+)
+from app.database import DatabaseManager
 from app.workflow import WorkflowNode, WorkflowRuntimeContext, WorkflowState, WorkflowStatus
 
 
@@ -26,6 +33,13 @@ class WorkflowRunRequest(BaseModel):
 
     messages: list[ChatMessage] = Field(min_length=1)
     session_id: str | None = Field(default=None, min_length=1)
+
+
+class WorkflowResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation_id: str = Field(min_length=1)
+    confirmed: bool
 
 
 class WorkflowRunResponse(BaseModel):
@@ -49,6 +63,7 @@ class WorkflowRuntime:
     model_provider: ChatModelProvider
     tool_registry: ToolRegistry
     nodes: tuple[WorkflowNode, ...] | None = None
+    checkpoint_store: WorkflowCheckpointStore | None = None
 
     def __post_init__(self) -> None:
         if self.nodes is None:
@@ -60,6 +75,8 @@ class WorkflowRuntime:
                 RefundInterruptionNode(),
                 ReactLoopNode(self.model_provider, self.tool_registry),
             )
+        if self.checkpoint_store is None:
+            self.checkpoint_store = InMemoryWorkflowCheckpointStore()
         if not self.nodes:
             raise WorkflowRuntimeError("workflow requires at least one node")
         names: list[str] = []
@@ -85,7 +102,10 @@ class WorkflowRuntime:
         if any(not isinstance(message, ChatMessage) for message in messages):
             raise WorkflowRuntimeError("workflow messages contain an invalid message")
 
-        context = WorkflowRuntimeContext(request_id=request_id or str(uuid4()), session_id=session_id)
+        context = WorkflowRuntimeContext(
+            request_id=request_id or str(uuid4()),
+            session_id=session_id,
+        )
         state = WorkflowState(data={
             "messages": [message.model_copy(deep=True) for message in messages],
             "session_id": session_id,
@@ -100,12 +120,116 @@ class WorkflowRuntime:
                 state.data["error"] = {
                     "code": getattr(exc, "code", "workflow_failed"),
                     "message": str(exc),
-                    **({"iteration": exc.iteration} if isinstance(getattr(exc, "iteration", None), int) else {}),
+                    **(
+                        {"iteration": exc.iteration}
+                        if isinstance(getattr(exc, "iteration", None), int)
+                        else {}
+                    ),
                 }
                 break
             if state.status is WorkflowStatus.AWAITING_CONFIRMATION:
+                confirmation_id = state.data.get("confirmation_id")
+                if not isinstance(confirmation_id, str):
+                    state.status = WorkflowStatus.FAILED
+                    state.data["error"] = {
+                        "code": "checkpoint_save_failed",
+                        "message": "confirmation checkpoint has no ID",
+                    }
+                    break
+                try:
+                    self.checkpoint_store.save_pending(
+                        WorkflowCheckpoint(
+                            confirmation_id=confirmation_id,
+                            run_id=context.run_id,
+                            state=state,
+                        )
+                    )
+                except Exception as exc:
+                    state.status = WorkflowStatus.FAILED
+                    state.data["error"] = {
+                        "code": "checkpoint_save_failed",
+                        "message": str(exc),
+                    }
+                    state.data["confirmation_required"] = False
                 break
         state.data["workflow_run_id"] = context.run_id
+        return state
+
+    async def resume(
+        self,
+        confirmation_id: str,
+        *,
+        confirmed: bool,
+    ) -> WorkflowState:
+        checkpoint = self.checkpoint_store.claim(confirmation_id)
+        state = checkpoint.state
+        context = WorkflowRuntimeContext(
+            request_id=str(state.data.get("request_id") or uuid4()),
+            session_id=(
+                state.data.get("session_id")
+                if isinstance(state.data.get("session_id"), str)
+                else None
+            ),
+        )
+        checkpoint.run_id = context.run_id
+        state.data["workflow_run_id"] = context.run_id
+        state.data["confirmation_required"] = False
+
+        if not confirmed:
+            state.status = WorkflowStatus.COMPLETED
+            state.data["confirmation_status"] = "rejected"
+            state.data["answer"] = "已取消此售后申请。"
+            self.checkpoint_store.finish(checkpoint, "rejected")
+            return state
+
+        state.status = WorkflowStatus.RUNNING
+        state.data["confirmation_status"] = "confirmed"
+        state.data.pop("answer", None)
+        state.current_node = "refund-confirmation-interrupt"
+        nodes = self.nodes or ()
+        resume_index = next(
+            (
+                index
+                for index, node in enumerate(nodes)
+                if node.name == "refund-confirmation-interrupt"
+            ),
+            None,
+        )
+        if resume_index is None:
+            state.status = WorkflowStatus.FAILED
+            state.data["error"] = {
+                "code": "workflow_resume_failed",
+                "message": "confirmation interrupt node is not configured",
+            }
+        else:
+            for node in nodes[resume_index + 1 :]:
+                try:
+                    state = await node.execute(state, context)
+                except Exception as exc:
+                    state.status = WorkflowStatus.FAILED
+                    state.current_node = node.name
+                    state.data["error"] = {
+                        "code": getattr(exc, "code", "workflow_failed"),
+                        "message": str(exc),
+                        **(
+                            {"iteration": exc.iteration}
+                            if isinstance(getattr(exc, "iteration", None), int)
+                            else {}
+                        ),
+                    }
+                    break
+                if state.status is WorkflowStatus.AWAITING_CONFIRMATION:
+                    break
+
+        checkpoint.state = state
+        try:
+            self.checkpoint_store.finish(checkpoint, state.status.value)
+        except Exception as exc:
+            state.status = WorkflowStatus.FAILED
+            state.data["error"] = {
+                "code": "checkpoint_update_failed",
+                "message": str(exc),
+            }
         return state
 
 
@@ -135,4 +259,11 @@ def workflow_response(state: WorkflowState) -> WorkflowRunResponse:
 
 
 def default_workflow_runtime() -> WorkflowRuntime:
-    return WorkflowRuntime(StubModelProvider(), ToolRegistry())
+    checkpoint_store = SQLiteWorkflowCheckpointStore(
+        DatabaseManager("sqlite:///./data/cartpilot.db")
+    )
+    return WorkflowRuntime(
+        StubModelProvider(),
+        ToolRegistry(),
+        checkpoint_store=checkpoint_store,
+    )

@@ -49,6 +49,60 @@ def test_workflow_run_returns_pending_refund_confirmation():
     assert len(provider.calls) == 1
 
 
+def test_workflow_resume_accepts_confirmation_and_returns_final_state():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-7007",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        )
+    )
+    app.state.workflow_runtime = WorkflowRuntime(provider, ToolRegistry())
+    client = TestClient(app)
+    paused = client.post("/workflow/run", json={
+        "messages": [
+            {"role": "user", "content": "ORD-7007 到货破损，我要退款"}
+        ],
+    }).json()
+
+    resumed = client.post("/workflow/resume", json={
+        "confirmation_id": paused["confirmation_id"],
+        "confirmed": True,
+    })
+
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "completed"
+    assert resumed.json()["confirmation_required"] is False
+
+
+def test_workflow_resume_rejects_duplicate_confirmation():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-7008",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        )
+    )
+    app.state.workflow_runtime = WorkflowRuntime(provider, ToolRegistry())
+    client = TestClient(app)
+    paused = client.post("/workflow/run", json={
+        "messages": [
+            {"role": "user", "content": "ORD-7008 到货破损，我要退款"}
+        ],
+    }).json()
+    request = {
+        "confirmation_id": paused["confirmation_id"],
+        "confirmed": True,
+    }
+
+    first = client.post("/workflow/resume", json=request)
+    duplicate = client.post("/workflow/resume", json=request)
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "checkpoint_already_resumed"
+
+
 def test_workflow_run_validates_request():
     response = TestClient(app).post("/workflow/run", json={"messages": []})
     assert response.status_code == 422

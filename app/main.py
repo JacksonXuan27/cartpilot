@@ -24,9 +24,14 @@ from app.vector_store import InMemoryVectorStore
 from app.workflow_runtime import (
     WorkflowRunRequest,
     WorkflowRunResponse,
+    WorkflowResumeRequest,
     WorkflowRuntime,
     default_workflow_runtime,
     workflow_response,
+)
+from app.workflow_checkpoints import (
+    WorkflowCheckpointAlreadyResumedError,
+    WorkflowCheckpointNotFoundError,
 )
 
 
@@ -57,6 +62,37 @@ async def workflow_run(
 ) -> WorkflowRunResponse:
     runtime: WorkflowRuntime = http_request.app.state.workflow_runtime
     state = await runtime.run(request.messages, session_id=request.session_id)
+    return workflow_response(state)
+
+
+@app.post("/workflow/resume", response_model=WorkflowRunResponse)
+async def workflow_resume(
+    request: WorkflowResumeRequest, http_request: Request
+) -> WorkflowRunResponse | JSONResponse:
+    runtime: WorkflowRuntime = http_request.app.state.workflow_runtime
+    try:
+        state = await runtime.resume(
+            request.confirmation_id,
+            confirmed=request.confirmed,
+        )
+    except WorkflowCheckpointNotFoundError as exc:
+        return JSONResponse(
+            status_code=404,
+            content=error_response(
+                code="checkpoint_not_found",
+                message=str(exc),
+                retryable=False,
+            ).model_dump(mode="json"),
+        )
+    except WorkflowCheckpointAlreadyResumedError as exc:
+        return JSONResponse(
+            status_code=409,
+            content=error_response(
+                code="checkpoint_already_resumed",
+                message=str(exc),
+                retryable=False,
+            ).model_dump(mode="json"),
+        )
     return workflow_response(state)
 
 
