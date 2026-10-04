@@ -90,8 +90,11 @@ async def test_runtime_uses_context_layers_for_model_prompt_and_preserves_histor
     ]
     state = await runtime.run(messages)
 
-    assert [message.content for message in provider.calls[0]] == [
-        "system-rule",
+    prompt = provider.calls[0]
+    assert prompt[0].content == "system-rule"
+    assert prompt[1].role == "assistant"
+    assert "message-1" in prompt[1].content
+    assert [message.content for message in prompt[2:]] == [
         "message-3",
         "message-4",
         "message-5",
@@ -102,6 +105,8 @@ async def test_runtime_uses_context_layers_for_model_prompt_and_preserves_histor
         "message-5",
     ]
     assert state.data["context_layers"]["omitted_message_count"] == 2
+    assert state.data["context_layers"]["summary"].role == "assistant"
+    assert "message-1" in state.data["context_layers"]["summary"].content
 
 
 @pytest.mark.anyio

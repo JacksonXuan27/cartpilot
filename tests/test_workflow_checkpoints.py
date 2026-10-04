@@ -47,6 +47,16 @@ def make_checkpoint() -> WorkflowCheckpoint:
                 ],
                 "confirmation_id": "confirmation-1",
                 "confirmation_required": True,
+                "context_layers": {
+                    "system": [],
+                    "summary": ChatMessage(
+                        role="assistant",
+                        content="较早对话提取式摘要：订单 ORD-1001 需要退款。",
+                    ),
+                    "long_term": [],
+                    "short_term": [],
+                    "omitted_message_count": 2,
+                },
             },
         ),
     )
@@ -72,6 +82,10 @@ def test_sqlite_checkpoint_store_persists_and_restores_workflow(tmp_path: Path):
         role="user", content="申请退款"
     )
     assert restored.state.data["messages"][1].tool_call_id == "call-1"
+    assert restored.state.data["context_layers"]["summary"] == ChatMessage(
+        role="assistant",
+        content="较早对话提取式摘要：订单 ORD-1001 需要退款。",
+    )
     restored_store.close()
 
 

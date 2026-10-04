@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.contracts import ChatMessage
+from app.conversation_summary import ExtractiveConversationSummarizer
 
 
 class ContextLayerError(ValueError):
@@ -13,15 +14,22 @@ class ContextLayers:
     system: tuple[ChatMessage, ...]
     long_term: tuple[ChatMessage, ...]
     short_term: tuple[ChatMessage, ...]
+    summary: ChatMessage | None = None
     omitted_message_count: int = 0
 
     @property
     def prompt_messages(self) -> tuple[ChatMessage, ...]:
-        return self.system + self.long_term + self.short_term
+        summary = (self.summary,) if self.summary is not None else ()
+        return self.system + summary + self.long_term + self.short_term
 
     def as_state(self) -> dict[str, object]:
         return {
             "system": [message.model_copy(deep=True) for message in self.system],
+            "summary": (
+                self.summary.model_copy(deep=True)
+                if self.summary is not None
+                else None
+            ),
             "long_term": [
                 message.model_copy(deep=True) for message in self.long_term
             ],
@@ -36,6 +44,7 @@ class ContextLayers:
 class ContextLayerManager:
     short_term_limit: int = 6
     long_term_limit: int = 20
+    summarizer: ExtractiveConversationSummarizer = ExtractiveConversationSummarizer()
 
     def __post_init__(self) -> None:
         if self.short_term_limit < 1:
@@ -56,10 +65,16 @@ class ContextLayerManager:
         older = conversation[: -self.short_term_limit]
         long_term = older[-self.long_term_limit :] if self.long_term_limit else ()
         omitted_message_count = len(older) - len(long_term)
+        summary = (
+            self.summarizer.summarize(older[:omitted_message_count])
+            if omitted_message_count
+            else None
+        )
         return ContextLayers(
             system=system,
             long_term=long_term,
             short_term=short_term,
+            summary=summary,
             omitted_message_count=omitted_message_count,
         )
 

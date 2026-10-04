@@ -29,14 +29,48 @@ def test_context_layers_keep_system_and_split_history_by_recency():
         "question-3",
         "answer-3",
     ]
+    assert layers.summary is not None
+    assert layers.summary.role == "assistant"
+    assert "较早对话提取式摘要（2 条消息）" in layers.summary.content
+    assert "question-1" in layers.summary.content
     assert [message.content for message in layers.prompt_messages] == [
         "You are a support agent.",
+        layers.summary.content,
         "question-2",
         "answer-2",
         "question-3",
         "answer-3",
     ]
     assert layers.omitted_message_count == 2
+
+
+def test_extractive_summary_normalizes_and_bounds_long_messages():
+    from app.conversation_summary import ExtractiveConversationSummarizer
+
+    summarizer = ExtractiveConversationSummarizer(
+        max_message_characters=12,
+        max_summary_characters=64,
+    )
+    summary = summarizer.summarize(
+        [ChatMessage(role="user", content="  keep the order ORD-12345 and mention damage  ")]
+    )
+
+    assert summary.role == "assistant"
+    assert len(summary.content) <= 64
+    assert "用户" in summary.content
+    assert "…" in summary.content
+
+
+def test_context_layers_do_not_summarize_history_within_retention_limits():
+    layers = ContextLayerManager(short_term_limit=2, long_term_limit=2).build(
+        [
+            ChatMessage(role="user", content="question"),
+            ChatMessage(role="assistant", content="answer"),
+        ]
+    )
+
+    assert layers.summary is None
+    assert layers.omitted_message_count == 0
 
 
 def test_context_layers_reject_invalid_limits_and_messages():
