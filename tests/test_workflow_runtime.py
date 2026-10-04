@@ -182,6 +182,30 @@ async def test_runtime_shares_budget_between_after_sales_and_resume():
 
 
 @pytest.mark.anyio
+async def test_runtime_returns_structured_failure_when_after_sales_exceeds_budget():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-BUDGET",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        ),
+        usage=TokenUsage(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry(), token_budget=5)
+
+    state = await runtime.run(
+        [ChatMessage(role="user", content="ORD-BUDGET 到货破损，我要退款")]
+    )
+
+    assert state.status is WorkflowStatus.FAILED
+    assert state.current_node == "after-sales-intent"
+    assert state.data["error"]["code"] == "token_budget_exceeded"
+    assert state.data["token_usage"]["total_tokens"] == 6
+    assert state.data["token_budget"] == 5
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.anyio
 async def test_runtime_converts_provider_failure_to_failed_state():
     class BrokenProvider:
         async def complete(self, messages, tools=()) -> ModelResult:

@@ -77,6 +77,53 @@ def test_context_layers_do_not_summarize_history_within_retention_limits():
     assert layers.omitted_message_count == 0
 
 
+def test_long_conversation_keeps_prompt_bounded_and_history_complete():
+    manager = ContextLayerManager(short_term_limit=4, long_term_limit=4)
+    messages = [ChatMessage(role="system", content="system-rule")]
+    messages.extend(
+        ChatMessage(
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"message-{index}",
+        )
+        for index in range(40)
+    )
+
+    layers = manager.build(messages)
+
+    assert len(layers.prompt_messages) == 10
+    assert len(layers.system) == 1
+    assert len(layers.long_term) == 4
+    assert len(layers.short_term) == 4
+    assert layers.summary is not None
+    assert layers.omitted_message_count == 32
+    assert "message-0" in layers.summary.content
+    assert "message-31" in layers.summary.content
+    assert [message.content for message in messages[1:]] == [
+        f"message-{index}" for index in range(40)
+    ]
+
+
+def test_summary_is_consistent_after_cache_hit_and_rebuild():
+    messages = [
+        ChatMessage(role="user", content="旧问题"),
+        ChatMessage(role="assistant", content="旧回答"),
+        ChatMessage(role="user", content="新问题"),
+        ChatMessage(role="assistant", content="新回答"),
+    ]
+    manager = ContextLayerManager(short_term_limit=1, long_term_limit=1)
+
+    first = manager.build(messages).as_state()
+    second = manager.build(messages).as_state()
+    manager.cache.clear()
+    third = manager.build(messages).as_state()
+
+    assert first == second == third
+    summary = first["summary"]
+    assert isinstance(summary, ChatMessage)
+    assert summary.content.index("旧问题") < summary.content.index("旧回答")
+    assert "新问题" not in summary.content
+
+
 def test_context_layer_cache_reuses_isolated_context_snapshots():
     manager = ContextLayerManager(short_term_limit=1, long_term_limit=1)
     messages = [
