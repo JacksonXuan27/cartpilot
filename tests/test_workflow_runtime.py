@@ -110,6 +110,32 @@ async def test_runtime_uses_context_layers_for_model_prompt_and_preserves_histor
 
 
 @pytest.mark.anyio
+async def test_runtime_reuses_context_cache_between_after_sales_and_agent():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"repair","order_id":"ORD-CACHE",'
+            '"reason":"broken","requested_action":"repair",'
+            '"confidence":0.9}'
+        )
+    )
+    context_layers = ContextLayerManager()
+    runtime = WorkflowRuntime(
+        provider,
+        ToolRegistry(),
+        context_layer_manager=context_layers,
+    )
+
+    state = await runtime.run(
+        [ChatMessage(role="user", content="订单 ORD-CACHE 坏了需要维修")]
+    )
+
+    assert state.status is WorkflowStatus.COMPLETED
+    assert len(provider.calls) == 2
+    assert context_layers.cache.stats().misses == 1
+    assert context_layers.cache.stats().hits == 1
+
+
+@pytest.mark.anyio
 async def test_runtime_completes_normal_tool_call_path():
     provider = StubModelProvider(
         reply="工具查询完成",

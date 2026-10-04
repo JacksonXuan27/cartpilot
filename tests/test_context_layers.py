@@ -1,6 +1,10 @@
 import pytest
 
-from app.context_layers import ContextLayerError, ContextLayerManager
+from app.context_layers import (
+    ContextLayerCache,
+    ContextLayerError,
+    ContextLayerManager,
+)
 from app.contracts import ChatMessage
 
 
@@ -71,6 +75,92 @@ def test_context_layers_do_not_summarize_history_within_retention_limits():
 
     assert layers.summary is None
     assert layers.omitted_message_count == 0
+
+
+def test_context_layer_cache_reuses_isolated_context_snapshots():
+    manager = ContextLayerManager(short_term_limit=1, long_term_limit=1)
+    messages = [
+        ChatMessage(role="user", content="question-1"),
+        ChatMessage(role="assistant", content="answer-1"),
+        ChatMessage(role="user", content="question-2"),
+        ChatMessage(role="assistant", content="answer-2"),
+    ]
+
+    first = manager.build(messages)
+    first.summary.content = "mutated cached summary"
+    first.short_term[-1].content = "mutated cached message"
+    second = manager.build(messages)
+
+    assert "question-1" in second.summary.content
+    assert second.short_term[-1].content == "answer-2"
+    assert manager.cache.stats().hits == 1
+    assert manager.cache.stats().misses == 1
+
+
+def test_context_layer_cache_invalidates_changed_messages_and_configuration():
+    cache = ContextLayerCache(max_entries=4)
+    messages = [
+        ChatMessage(role="user", content="first"),
+        ChatMessage(role="assistant", content="second"),
+        ChatMessage(role="user", content="third"),
+    ]
+    manager = ContextLayerManager(short_term_limit=1, long_term_limit=1, cache=cache)
+
+    manager.build(messages)
+    messages[0].content = "updated"
+    manager.build(messages)
+    ContextLayerManager(
+        short_term_limit=2,
+        long_term_limit=1,
+        cache=cache,
+    ).build(messages)
+
+    stats = cache.stats()
+    assert stats.misses == 3
+    assert stats.hits == 0
+    assert stats.size == 3
+
+
+def test_context_layer_cache_evicts_least_recently_used_entries():
+    cache = ContextLayerCache(max_entries=2)
+    manager = ContextLayerManager(
+        short_term_limit=1,
+        long_term_limit=0,
+        cache=cache,
+    )
+    first = [ChatMessage(role="user", content="first")]
+    second = [ChatMessage(role="user", content="second")]
+    third = [ChatMessage(role="user", content="third")]
+
+    manager.build(first)
+    manager.build(second)
+    manager.build(first)
+    manager.build(third)
+    manager.build(first)
+    manager.build(second)
+
+    stats = cache.stats()
+    assert stats.capacity == 2
+    assert stats.size == 2
+    assert stats.hits == 2
+    assert stats.misses == 4
+    assert stats.evictions == 2
+
+
+def test_context_layer_cache_clear_resets_entries_and_statistics():
+    manager = ContextLayerManager()
+    messages = [ChatMessage(role="user", content="hello")]
+
+    manager.build(messages)
+    manager.build(messages)
+    manager.cache.clear()
+    manager.build(messages)
+
+    stats = manager.cache.stats()
+    assert stats.size == 1
+    assert stats.hits == 0
+    assert stats.misses == 1
+    assert stats.evictions == 0
 
 
 def test_context_layers_reject_invalid_limits_and_messages():
