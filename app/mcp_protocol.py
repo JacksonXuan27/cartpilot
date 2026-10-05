@@ -59,7 +59,7 @@ class MCPRequest(BaseModel):
 
     jsonrpc: Literal[JSONRPC_VERSION] = JSONRPC_VERSION
     id: int | str
-    method: Literal[MCP_TOOLS_LIST_METHOD, MCP_TOOLS_CALL_METHOD]
+    method: str = Field(min_length=1)
     params: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -84,7 +84,14 @@ class MCPRequest(BaseModel):
         try:
             if self.method == MCP_TOOLS_LIST_METHOD:
                 return MCPToolsListParams.model_validate(self.params)
-            return MCPToolsCallParams.model_validate(self.params)
+            if self.method == MCP_TOOLS_CALL_METHOD:
+                return MCPToolsCallParams.model_validate(self.params)
+            raise MCPProtocolError(
+                f"method not found: {self.method}",
+                code=MCP_METHOD_NOT_FOUND,
+            )
+        except MCPProtocolError:
+            raise
         except ValidationError as exc:
             raise MCPProtocolError(
                 f"invalid parameters for {self.method}",

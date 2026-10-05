@@ -7,6 +7,7 @@ from app.mcp_protocol import (
     JSONRPC_VERSION,
     MCP_INVALID_PARAMS,
     MCP_INVALID_REQUEST,
+    MCP_METHOD_NOT_FOUND,
     MCP_PARSE_ERROR,
     MCPProtocolError,
     MCPCallToolResult,
@@ -209,7 +210,12 @@ def test_decode_rejects_malformed_json_non_object_and_invalid_request_fields():
     for payload in invalid_payloads:
         with pytest.raises(MCPProtocolError) as request_error:
             decode_mcp_request(json.dumps(payload))
-        assert request_error.value.code == MCP_INVALID_REQUEST
+        expected_code = (
+            MCP_METHOD_NOT_FOUND
+            if payload["method"] == "tools/unknown"
+            else MCP_INVALID_REQUEST
+        )
+        assert request_error.value.code == expected_code
 
 
 def test_decode_rejects_invalid_response_payload():
