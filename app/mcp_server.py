@@ -2,6 +2,7 @@ import json
 
 from pydantic import ValidationError
 
+from app.mcp_discovery import MCPToolDiscovery, MCPToolSource
 from app.mcp_protocol import (
     MCP_INVALID_PARAMS,
     MCPCallToolResult,
@@ -19,6 +20,10 @@ from app.tool_registry import ToolArgumentError, ToolNotFoundError, ToolRegistry
 class MCPToolServer:
     def __init__(self, tool_registry: ToolRegistry) -> None:
         self._tool_registry = tool_registry
+        self._tool_discovery = MCPToolDiscovery(tool_registry)
+
+    async def discover_and_register(self, source: MCPToolSource) -> tuple[str, ...]:
+        return await self._tool_discovery.discover_and_register(source)
 
     async def handle(self, payload: str | bytes) -> MCPResponse:
         request_id: int | str | None = None
