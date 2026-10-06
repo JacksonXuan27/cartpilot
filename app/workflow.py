@@ -61,12 +61,15 @@ class WorkflowRuntimeContext:
     context_layer_manager: ContextLayerManager = field(
         default_factory=ContextLayerManager
     )
+    trace_id: str = field(default_factory=lambda: str(uuid4()))
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, str) or not self.request_id.strip():
             raise WorkflowError("request_id cannot be empty")
         if not isinstance(self.run_id, str) or not self.run_id.strip():
             raise WorkflowError("run_id cannot be empty")
+        if not isinstance(self.trace_id, str) or not self.trace_id.strip():
+            raise WorkflowError("trace_id cannot be empty")
         if self.session_id is not None and (
             not isinstance(self.session_id, str) or not self.session_id.strip()
         ):

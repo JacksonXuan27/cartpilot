@@ -16,6 +16,7 @@ def test_workflow_run_returns_execution_summary():
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["trace_id"]
     assert payload["status"] == "completed"
     assert payload["answer"] == "可以帮你处理。"
     assert payload["intent"] == "smalltalk"
