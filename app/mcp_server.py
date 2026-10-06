@@ -1,11 +1,9 @@
 import json
 
-from pydantic import ValidationError
-
 from app.mcp_discovery import MCPToolDiscovery, MCPToolSource
+from app.mcp_executor import MCPToolExecutor
 from app.mcp_protocol import (
     MCP_INVALID_PARAMS,
-    MCPCallToolResult,
     MCPProtocolError,
     MCPRequest,
     MCPResponse,
@@ -14,13 +12,14 @@ from app.mcp_protocol import (
     MCPToolsListResult,
     decode_mcp_request,
 )
-from app.tool_registry import ToolArgumentError, ToolNotFoundError, ToolRegistry
+from app.tool_registry import ToolRegistry
 
 
 class MCPToolServer:
     def __init__(self, tool_registry: ToolRegistry) -> None:
         self._tool_registry = tool_registry
         self._tool_discovery = MCPToolDiscovery(tool_registry)
+        self._tool_executor = MCPToolExecutor(tool_registry)
 
     async def discover_and_register(self, source: MCPToolSource) -> tuple[str, ...]:
         return await self._tool_discovery.discover_and_register(source)
@@ -48,33 +47,9 @@ class MCPToolServer:
             )
 
         if isinstance(params, MCPToolsCallParams):
-            return await self._call_tool(params)
+            return await self._tool_executor.execute(params.name, params.arguments)
 
         raise MCPProtocolError("unsupported request parameters")
-
-    async def _call_tool(self, params: MCPToolsCallParams) -> MCPCallToolResult:
-        try:
-            output = await self._tool_registry.execute(params.name, params.arguments)
-        except ToolNotFoundError:
-            return _tool_error(f"unknown tool: {params.name}")
-        except ToolArgumentError as exc:
-            return _tool_error(str(exc))
-        except (LookupError, ValueError) as exc:
-            return _tool_error(str(exc))
-        except Exception:
-            return _tool_error("tool execution failed")
-
-        try:
-            return MCPCallToolResult.from_output(output)
-        except (TypeError, ValueError, ValidationError):
-            return _tool_error("tool returned a result that cannot be serialized")
-
-
-def _tool_error(message: str) -> MCPCallToolResult:
-    return MCPCallToolResult(
-        content=[{"type": "text", "text": message}],
-        isError=True,
-    )
 
 
 def encode_mcp_response(response: MCPResponse) -> str:

@@ -42,9 +42,18 @@ class BrokenTool:
         raise RuntimeError("downstream unavailable")
 
 
+class UnserializableTool:
+    name = "unserializable"
+    description = "Return a value that cannot be encoded as JSON."
+    input_model = EchoInput
+
+    async def execute(self, arguments: Mapping[str, object]) -> object:
+        return {"value": object()}
+
+
 @pytest.fixture
 def server() -> MCPToolServer:
-    return MCPToolServer(ToolRegistry([EchoTool(), BrokenTool()]))
+    return MCPToolServer(ToolRegistry([EchoTool(), BrokenTool(), UnserializableTool()]))
 
 
 @pytest.mark.asyncio
@@ -52,7 +61,11 @@ async def test_server_lists_registered_business_tools(server: MCPToolServer):
     response = await server.handle(encode_mcp_message(MCPRequest.tools_list(1)))
 
     assert response.result is not None
-    assert [tool["name"] for tool in response.result["tools"]] == ["broken", "echo"]
+    assert [tool["name"] for tool in response.result["tools"]] == [
+        "broken",
+        "echo",
+        "unserializable",
+    ]
     assert response.error is None
 
 
@@ -82,8 +95,13 @@ async def test_server_converts_tool_failures_to_error_results(server: MCPToolSer
     broken = await server.handle(
         encode_mcp_message(MCPRequest.tools_call(5, "broken", {"message": "run"}))
     )
+    unserializable = await server.handle(
+        encode_mcp_message(
+            MCPRequest.tools_call(6, "unserializable", {"message": "run"})
+        )
+    )
 
-    for response in (unknown, invalid, broken):
+    for response in (unknown, invalid, broken, unserializable):
         assert response.error is None
         assert response.result is not None
         assert response.result["isError"] is True
