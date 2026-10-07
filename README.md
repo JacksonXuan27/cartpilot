@@ -19,6 +19,8 @@ CartPilot 是一个面向电商客服场景的 AI Agent 服务，逐步提供多
 - 文档清洗、切块、Embedding 抽象和本地确定性向量替身；
 - Milvus 向量存储适配器与知识库问答接口 `POST /knowledge/query`；
 - Docker Compose 下的应用、Milvus、etcd 和 MinIO 服务编排。
+- Workflow Trace/Span、模型 Token、耗时和估算成本统计；
+- 可选的后台 HTTP 观测导出，默认只发送观测元数据，不发送对话正文。
 
 后续章节将继续实现 Function Calling 工具链、RAG 检索、Workflow + Agent、上下文管理、MCP 工具系统、可观测性和分类器推理。
 
@@ -41,6 +43,8 @@ uv run uvicorn app.main:app --reload
 - 知识库问答：`POST http://127.0.0.1:8000/knowledge/query`。
 
 当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。
+
+如需接入自建观测服务或 Langfuse 兼容网关，可在 `.env` 中配置 `OBSERVABILITY_EXPORT_URL`，并按需设置 `OBSERVABILITY_API_KEY`。导出在后台队列中执行，观测服务不可用时不会阻塞对话和 Workflow 主链路；未配置端点时继续使用内存记录器。
 
 ## Docker 服务
 
@@ -80,6 +84,7 @@ uv run pytest
 | `app/embeddings.py` | Embedding 接口和本地替身 |
 | `app/vector_store.py` | 内存向量库和 Milvus 适配器 |
 | `app/knowledge_base.py` | 知识库检索与问答服务 |
+| `app/observability.py` | Trace、模型指标和可选 HTTP 导出 |
 | `tests/` | 单元测试、接口测试和集成测试 |
 
 ## 开发约定

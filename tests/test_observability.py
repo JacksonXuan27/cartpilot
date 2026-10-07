@@ -1,10 +1,17 @@
+import json
+from datetime import datetime, timezone
+from threading import Event
+
 import pytest
 
 from app.contracts import ChatMessage, TokenUsage
 from app.observability import (
+    HttpObservabilityExporter,
     InMemoryModelMetricsRecorder,
     InMemoryTraceRecorder,
+    ModelCallMetric,
     ModelPricing,
+    TraceSpan,
 )
 from app.providers import StubModelProvider
 from app.react_loop import ReactLoopNode
@@ -37,6 +44,29 @@ class FailingNode:
         error = RuntimeError("private downstream detail")
         error.code = "test_node_failed"
         raise error
+
+
+class RecordingTransport:
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def send(self, payload: dict[str, object]) -> None:
+        self.payloads.append(payload)
+
+
+class FailingTransport:
+    def send(self, payload: dict[str, object]) -> None:
+        raise RuntimeError("observability unavailable")
+
+
+class BlockingTransport:
+    def __init__(self) -> None:
+        self.started = Event()
+        self.release = Event()
+
+    def send(self, payload: dict[str, object]) -> None:
+        self.started.set()
+        self.release.wait(timeout=2)
 
 
 @pytest.mark.anyio
@@ -257,3 +287,92 @@ def test_model_pricing_rejects_negative_rates():
             input_usd_per_million_tokens=-1,
             output_usd_per_million_tokens=0,
         )
+
+
+def test_http_exporter_sends_trace_and_model_metadata_without_message_content():
+    transport = RecordingTransport()
+    exporter = HttpObservabilityExporter(transport)
+    try:
+        exporter.record(
+            TraceSpan(
+                trace_id="trace-export",
+                span_id="span-export",
+                name="workflow.run",
+                status="completed",
+                started_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 10, 7, 0, 0, 0, 1000, tzinfo=timezone.utc),
+                duration_ms=1,
+                attributes={"request_id": "request-export"},
+            )
+        )
+        exporter.record(
+            ModelCallMetric(
+                trace_id="trace-export",
+                run_id="run-export",
+                operation="react_loop.complete",
+                model_name="test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                duration_ms=4,
+                estimated_cost_usd=0.0001,
+                created_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+            )
+        )
+        exporter.flush()
+    finally:
+        exporter.close()
+
+    assert [payload["event_type"] for payload in transport.payloads] == [
+        "trace.span",
+        "model.call",
+    ]
+    serialized = json.dumps(transport.payloads, ensure_ascii=False)
+    assert "request-export" in serialized
+    assert "customer message" not in serialized
+    assert transport.payloads[1]["total_tokens"] == 20
+
+
+def test_http_exporter_does_not_propagate_transport_failures():
+    exporter = HttpObservabilityExporter(FailingTransport())
+    try:
+        exporter.record(
+            TraceSpan(
+                trace_id="trace-failed-export",
+                span_id="span-failed-export",
+                name="workflow.run",
+                status="failed",
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+                duration_ms=0,
+            )
+        )
+        exporter.flush()
+        assert exporter.failed_events == 1
+    finally:
+        exporter.close()
+
+
+def test_http_exporter_drops_events_instead_of_blocking_when_queue_is_full():
+    transport = BlockingTransport()
+    exporter = HttpObservabilityExporter(transport, queue_size=1)
+    span = TraceSpan(
+        trace_id="trace-backpressure",
+        span_id="span-backpressure",
+        name="workflow.run",
+        status="completed",
+        started_at=datetime.now(timezone.utc),
+        ended_at=datetime.now(timezone.utc),
+        duration_ms=0,
+    )
+    try:
+        exporter.record(span)
+        assert transport.started.wait(timeout=1)
+        exporter.record(span.model_copy(update={"span_id": "span-queued"}))
+        exporter.record(span.model_copy(update={"span_id": "span-dropped"}))
+        assert exporter.dropped_events == 1
+        transport.release.set()
+        exporter.flush()
+    finally:
+        transport.release.set()
+        exporter.close()

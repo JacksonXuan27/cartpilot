@@ -29,6 +29,7 @@ from app.observability import (
     ModelMetricsSummary,
     ModelPricing,
     TraceRecorder,
+    observability_exporter_from_env,
     record_span,
     start_span,
 )
@@ -409,8 +410,11 @@ def default_workflow_runtime() -> WorkflowRuntime:
     checkpoint_store = SQLiteWorkflowCheckpointStore(
         DatabaseManager("sqlite:///./data/cartpilot.db")
     )
+    exporter = observability_exporter_from_env()
     return WorkflowRuntime(
         StubModelProvider(),
         ToolRegistry(),
         checkpoint_store=checkpoint_store,
+        trace_recorder=exporter,
+        metrics_recorder=exporter,
     )
