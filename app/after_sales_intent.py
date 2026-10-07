@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+import time
 
 from pydantic import ValidationError
 
@@ -37,10 +38,24 @@ class AfterSalesIntentNode:
         state.data.pop("after_sales_intent_skipped", None)
         try:
             messages = _coerce_messages(state.data.get("messages"))
-            extraction = await self.extractor.extract(
-                context.prepare_context(state, messages)
+            model_call_started = time.monotonic()
+            try:
+                extraction = await self.extractor.extract(
+                    context.prepare_context(state, messages)
+                )
+            except Exception:
+                context.record_model_call(
+                    "after_sales.extract",
+                    None,
+                    (time.monotonic() - model_call_started) * 1000,
+                )
+                context.apply_usage(state)
+                raise
+            context.record_model_call(
+                "after_sales.extract",
+                extraction.usage,
+                (time.monotonic() - model_call_started) * 1000,
             )
-            context.record_usage(extraction.usage)
             context.apply_usage(state)
         except WorkflowTokenBudgetExceededError:
             context.apply_usage(state)

@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+import time
 
 from pydantic import ValidationError
 
@@ -64,14 +65,28 @@ class ReactLoopNode:
             for iteration in range(1, self.max_iterations + 1):
                 state.data["react_iterations"] = iteration
                 prompt_messages = context.prepare_context(state, messages)
-                result = await self.model_provider.complete(
-                    prompt_messages,
-                    tools=self.tool_registry.definitions(),
-                )
+                model_call_started = time.monotonic()
+                try:
+                    result = await self.model_provider.complete(
+                        prompt_messages,
+                        tools=self.tool_registry.definitions(),
+                    )
+                except Exception:
+                    context.record_model_call(
+                        "react_loop.complete",
+                        None,
+                        (time.monotonic() - model_call_started) * 1000,
+                    )
+                    context.apply_usage(state)
+                    raise
                 if result.usage is not None:
                     state.data["last_model_usage"] = result.usage.model_dump(mode="json")
                 try:
-                    context.record_usage(result.usage)
+                    context.record_model_call(
+                        "react_loop.complete",
+                        result.usage,
+                        (time.monotonic() - model_call_started) * 1000,
+                    )
                 except WorkflowTokenBudgetExceededError as exc:
                     context.apply_usage(state)
                     raise ReactLoopError(

@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.contracts import TokenUsage
 from app.main import app
+from app.observability import ModelPricing
 from app.providers import StubModelProvider
 from app.tool_registry import ToolRegistry
 from app.workflow_runtime import WorkflowRuntime
@@ -35,6 +36,11 @@ def test_workflow_run_returns_token_usage_and_budget():
         provider,
         ToolRegistry(),
         token_budget=8,
+        model_name="test-model",
+        model_pricing=ModelPricing(
+            input_usd_per_million_tokens=2.0,
+            output_usd_per_million_tokens=4.0,
+        ),
     )
 
     response = TestClient(app).post("/workflow/run", json={
@@ -49,6 +55,8 @@ def test_workflow_run_returns_token_usage_and_budget():
         "completion_tokens": 3,
         "total_tokens": 8,
     }
+    assert payload["model_metrics"]["call_count"] == 1
+    assert payload["model_metrics"]["estimated_cost_usd"] == 0.000022
 
 
 def test_workflow_run_returns_pending_refund_confirmation():

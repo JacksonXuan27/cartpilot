@@ -7,6 +7,12 @@ from uuid import uuid4
 
 from app.contracts import ChatMessage, TokenUsage
 from app.context_layers import ContextLayerManager
+from app.observability import (
+    ModelCallMetric,
+    ModelMetricsRecorder,
+    ModelMetricsSummary,
+    ModelPricing,
+)
 
 
 class WorkflowError(ValueError):
@@ -62,6 +68,10 @@ class WorkflowRuntimeContext:
         default_factory=ContextLayerManager
     )
     trace_id: str = field(default_factory=lambda: str(uuid4()))
+    model_name: str = "configured-model"
+    model_pricing: ModelPricing | None = None
+    metrics_recorder: ModelMetricsRecorder | None = None
+    model_metrics: ModelMetricsSummary = field(default_factory=ModelMetricsSummary)
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, str) or not self.request_id.strip():
@@ -70,6 +80,8 @@ class WorkflowRuntimeContext:
             raise WorkflowError("run_id cannot be empty")
         if not isinstance(self.trace_id, str) or not self.trace_id.strip():
             raise WorkflowError("trace_id cannot be empty")
+        if not isinstance(self.model_name, str) or not self.model_name.strip():
+            raise WorkflowError("model_name cannot be empty")
         if self.session_id is not None and (
             not isinstance(self.session_id, str) or not self.session_id.strip()
         ):
@@ -117,8 +129,67 @@ class WorkflowRuntimeContext:
 
     def apply_usage(self, state: "WorkflowState") -> None:
         state.data["token_usage"] = self.token_usage.model_dump(mode="json")
+        state.data["model_metrics"] = self.model_metrics.model_dump(mode="json")
         if self.token_budget is not None:
             state.data["token_budget"] = self.token_budget
+
+    def record_model_call(
+        self,
+        operation: str,
+        usage: TokenUsage | None,
+        duration_ms: float,
+    ) -> TokenUsage:
+        budget_error: WorkflowTokenBudgetExceededError | None = None
+        try:
+            self.record_usage(usage)
+        except WorkflowTokenBudgetExceededError as exc:
+            budget_error = exc
+        current = self.model_metrics
+        priced_call_count = current.priced_call_count + int(
+            self.model_pricing is not None and usage is not None
+        )
+        unpriced_call_count = current.unpriced_call_count + int(
+            self.model_pricing is None or usage is None
+        )
+        estimated_cost = (
+            self.model_pricing.estimate_cost(
+                usage.prompt_tokens,
+                usage.completion_tokens,
+            )
+            if self.model_pricing is not None and usage is not None
+            else None
+        )
+        self.model_metrics = ModelMetricsSummary(
+            call_count=current.call_count + 1,
+            duration_ms=current.duration_ms + max(0.0, duration_ms),
+            estimated_cost_usd=(
+                (current.estimated_cost_usd or 0.0) + estimated_cost
+                if unpriced_call_count == 0 and estimated_cost is not None
+                else None
+            ),
+            priced_call_count=priced_call_count,
+            unpriced_call_count=unpriced_call_count,
+        )
+        if self.metrics_recorder is not None:
+            metric = ModelCallMetric(
+                trace_id=self.trace_id,
+                run_id=self.run_id,
+                operation=operation,
+                model_name=self.model_name,
+                prompt_tokens=usage.prompt_tokens if usage else 0,
+                completion_tokens=usage.completion_tokens if usage else 0,
+                total_tokens=usage.total_tokens if usage else 0,
+                duration_ms=max(0.0, duration_ms),
+                estimated_cost_usd=estimated_cost,
+                created_at=datetime.now(timezone.utc),
+            )
+            try:
+                self.metrics_recorder.record(metric)
+            except Exception:
+                pass
+        if budget_error is not None:
+            raise budget_error
+        return self.token_usage
 
     def prepare_context(
         self,

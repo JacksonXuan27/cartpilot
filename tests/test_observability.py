@@ -1,8 +1,13 @@
 import pytest
 
-from app.contracts import ChatMessage
-from app.observability import InMemoryTraceRecorder
+from app.contracts import ChatMessage, TokenUsage
+from app.observability import (
+    InMemoryModelMetricsRecorder,
+    InMemoryTraceRecorder,
+    ModelPricing,
+)
 from app.providers import StubModelProvider
+from app.react_loop import ReactLoopNode
 from app.tool_registry import ToolRegistry
 from app.workflow import WorkflowRuntimeContext, WorkflowState, WorkflowStatus
 from app.workflow_runtime import WorkflowRuntime
@@ -148,3 +153,107 @@ async def test_confirmation_resume_keeps_trace_id_across_runs():
     assert resumed.data["trace_id"] == trace_id
     assert {span.name for span in roots} == {"workflow.run", "workflow.resume"}
     assert all(span.trace_id == trace_id for span in spans)
+
+
+@pytest.mark.anyio
+async def test_runtime_reports_token_latency_and_configured_cost_metrics():
+    metrics_recorder = InMemoryModelMetricsRecorder()
+    provider = StubModelProvider(
+        reply="回复完成",
+        usage=TokenUsage(prompt_tokens=120, completion_tokens=30, total_tokens=150),
+    )
+    runtime = WorkflowRuntime(
+        provider,
+        ToolRegistry(),
+        nodes=(
+            ReactLoopNode(provider, ToolRegistry()),
+        ),
+        metrics_recorder=metrics_recorder,
+        model_name="test-model",
+        model_pricing=ModelPricing(
+            input_usd_per_million_tokens=2.0,
+            output_usd_per_million_tokens=4.0,
+        ),
+    )
+
+    state = await runtime.run([ChatMessage(role="user", content="hello")])
+
+    metrics = state.data["model_metrics"]
+    assert metrics["call_count"] == 1
+    assert metrics["priced_call_count"] == 1
+    assert metrics["unpriced_call_count"] == 0
+    assert metrics["estimated_cost_usd"] == pytest.approx(0.00036)
+    assert metrics["duration_ms"] >= 0
+    assert state.data["token_usage"] == {
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "total_tokens": 150,
+    }
+    recorded = metrics_recorder.metrics(trace_id=state.data["trace_id"])
+    assert len(recorded) == 1
+    assert recorded[0].model_name == "test-model"
+    assert recorded[0].operation == "react_loop.complete"
+    assert recorded[0].total_tokens == 150
+    assert recorded[0].estimated_cost_usd == pytest.approx(0.00036)
+
+
+@pytest.mark.anyio
+async def test_runtime_does_not_invent_cost_without_pricing():
+    provider = StubModelProvider(
+        reply="回复完成",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry())
+
+    state = await runtime.run([ChatMessage(role="user", content="hello")])
+
+    metrics = state.data["model_metrics"]
+    assert metrics["estimated_cost_usd"] is None
+    assert metrics["priced_call_count"] == 0
+    assert metrics["unpriced_call_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_metrics_accumulate_across_confirmation_resume():
+    metrics_recorder = InMemoryModelMetricsRecorder()
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-METRIC",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        ),
+        usage=TokenUsage(prompt_tokens=20, completion_tokens=5, total_tokens=25),
+    )
+    pricing = ModelPricing(
+        input_usd_per_million_tokens=1.0,
+        output_usd_per_million_tokens=2.0,
+    )
+    runtime = WorkflowRuntime(
+        provider,
+        ToolRegistry(),
+        metrics_recorder=metrics_recorder,
+        model_pricing=pricing,
+    )
+
+    pending = await runtime.run(
+        [ChatMessage(role="user", content="ORD-METRIC 到货破损，我要退款")]
+    )
+    resumed = await runtime.resume(
+        str(pending.data["confirmation_id"]),
+        confirmed=True,
+    )
+
+    metrics = resumed.data["model_metrics"]
+    assert metrics["call_count"] == 2
+    assert metrics["priced_call_count"] == 2
+    assert metrics["estimated_cost_usd"] == pytest.approx(0.00006)
+    recorded = metrics_recorder.metrics(trace_id=pending.data["trace_id"])
+    assert len(recorded) == 2
+
+
+def test_model_pricing_rejects_negative_rates():
+    with pytest.raises(ValueError):
+        ModelPricing(
+            input_usd_per_million_tokens=-1,
+            output_usd_per_million_tokens=0,
+        )

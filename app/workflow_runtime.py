@@ -23,7 +23,11 @@ from app.workflow_checkpoints import (
 )
 from app.database import DatabaseManager
 from app.observability import (
+    InMemoryModelMetricsRecorder,
     InMemoryTraceRecorder,
+    ModelMetricsRecorder,
+    ModelMetricsSummary,
+    ModelPricing,
     TraceRecorder,
     record_span,
     start_span,
@@ -55,6 +59,7 @@ class WorkflowRunResponse(BaseModel):
     workflow_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     trace_id: str = Field(min_length=1)
+    model_metrics: ModelMetricsSummary = Field(default_factory=ModelMetricsSummary)
     status: WorkflowStatus
     answer: str | None = None
     intent: str | None = None
@@ -77,6 +82,9 @@ class WorkflowRuntime:
     token_budget: int | None = 2000
     context_layer_manager: ContextLayerManager | None = None
     trace_recorder: TraceRecorder | None = None
+    metrics_recorder: ModelMetricsRecorder | None = None
+    model_name: str = "configured-model"
+    model_pricing: ModelPricing | None = None
 
     def __post_init__(self) -> None:
         if self.token_budget is not None and self.token_budget < 1:
@@ -85,6 +93,8 @@ class WorkflowRuntime:
             self.context_layer_manager = ContextLayerManager()
         if self.trace_recorder is None:
             self.trace_recorder = InMemoryTraceRecorder()
+        if self.metrics_recorder is None:
+            self.metrics_recorder = InMemoryModelMetricsRecorder()
         if self.nodes is None:
             self.nodes = (
                 IntentRouterNode(),
@@ -126,6 +136,9 @@ class WorkflowRuntime:
             session_id=session_id,
             token_budget=self.token_budget,
             context_layer_manager=self.context_layer_manager,
+            model_name=self.model_name,
+            model_pricing=self.model_pricing,
+            metrics_recorder=self.metrics_recorder,
         )
         state = WorkflowState(data={
             "messages": [message.model_copy(deep=True) for message in messages],
@@ -220,6 +233,12 @@ class WorkflowRuntime:
                 state.data.get("token_usage", {})
             ),
             context_layer_manager=self.context_layer_manager,
+            model_name=self.model_name,
+            model_pricing=self.model_pricing,
+            metrics_recorder=self.metrics_recorder,
+            model_metrics=ModelMetricsSummary.model_validate(
+                state.data.get("model_metrics", {})
+            ),
         )
         context.apply_usage(state)
         checkpoint.run_id = context.run_id
@@ -364,6 +383,9 @@ def workflow_response(state: WorkflowState) -> WorkflowRunResponse:
         iterations=int(state.data.get("react_iterations", 0)),
         error=error if isinstance(error, dict) else None,
         token_usage=TokenUsage.model_validate(state.data.get("token_usage", {})),
+        model_metrics=ModelMetricsSummary.model_validate(
+            state.data.get("model_metrics", {})
+        ),
         token_budget=(
             state.data.get("token_budget")
             if isinstance(state.data.get("token_budget"), int)
