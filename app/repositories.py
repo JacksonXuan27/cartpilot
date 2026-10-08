@@ -41,6 +41,7 @@ def initialize_schema(database: DatabaseManager) -> None:
                 request_id TEXT NOT NULL,
                 trace_id TEXT,
                 rating TEXT NOT NULL CHECK (rating IN ('helpful', 'unhelpful')),
+                review_status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 payload TEXT NOT NULL
             );
@@ -50,6 +51,16 @@ def initialize_schema(database: DatabaseManager) -> None:
                 ON user_feedback (request_id);
             """
         )
+        feedback_columns = {
+            row["name"]
+            for row in database.connection.execute("PRAGMA table_info(user_feedback)")
+        }
+        if "review_status" not in feedback_columns:
+            with database.transaction() as connection:
+                connection.execute(
+                    "ALTER TABLE user_feedback ADD COLUMN review_status "
+                    "TEXT NOT NULL DEFAULT 'pending'"
+                )
 
 
 class OrderRepository:
@@ -189,14 +200,15 @@ class UserFeedbackRepository:
             connection.execute(
                 """
                 INSERT INTO user_feedback
-                    (feedback_id, request_id, trace_id, rating, created_at, payload)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (feedback_id, request_id, trace_id, rating, review_status, created_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(feedback.feedback_id),
                     feedback.request_id,
                     feedback.trace_id,
                     feedback.rating,
+                    feedback.review_status,
                     feedback.created_at.isoformat(),
                     feedback.model_dump_json(),
                 ),
@@ -212,22 +224,47 @@ class UserFeedbackRepository:
             raise RecordNotFoundError(f"feedback not found: {feedback_id}")
         return UserFeedback.model_validate_json(row["payload"])
 
+    async def update_review(self, feedback: UserFeedback) -> UserFeedback:
+        with self._database.transaction() as connection:
+            result = connection.execute(
+                "UPDATE user_feedback SET review_status = ?, payload = ? "
+                "WHERE feedback_id = ?",
+                (
+                    feedback.review_status,
+                    feedback.model_dump_json(),
+                    str(feedback.feedback_id),
+                ),
+            )
+            if result.rowcount != 1:
+                raise RecordNotFoundError(f"feedback not found: {feedback.feedback_id}")
+        return feedback.model_copy(deep=True)
+
     async def list_recent(
-        self, limit: int = 50, *, request_id: str | None = None
+        self,
+        limit: int = 50,
+        *,
+        request_id: str | None = None,
+        rating: str | None = None,
+        review_status: str | None = None,
     ) -> list[UserFeedback]:
         _validate_limit(limit)
-        if request_id is None:
-            rows = self._database.connection.execute(
-                "SELECT payload FROM user_feedback "
-                "ORDER BY created_at DESC, feedback_id LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = self._database.connection.execute(
-                "SELECT payload FROM user_feedback WHERE request_id = ? "
-                "ORDER BY created_at DESC, feedback_id LIMIT ?",
-                (request_id, limit),
-            ).fetchall()
+        filters: list[str] = []
+        parameters: list[str | int] = []
+        for field_name, value in (
+            ("request_id", request_id),
+            ("rating", rating),
+            ("review_status", review_status),
+        ):
+            if value is not None:
+                filters.append(f"{field_name} = ?")
+                parameters.append(value)
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        parameters.append(limit)
+        rows = self._database.connection.execute(
+            "SELECT payload FROM user_feedback "
+            f"{where_clause} ORDER BY created_at DESC, feedback_id LIMIT ?",
+            parameters,
+        ).fetchall()
         return [UserFeedback.model_validate_json(row["payload"]) for row in rows]
 
 

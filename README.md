@@ -53,6 +53,8 @@ uv run uvicorn app.main:app --reload
 }
 ```
 
+审核反馈可通过 POST /feedback/{feedback_id}/review 写回审核状态、备注和审核人；GET /feedback/export 按 JSONL 导出反馈及审核元数据，可使用 rating、review_status 和 limit 筛选。导出不包含对话正文。
+
 当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。
 
 如需接入自建观测服务或 Langfuse 兼容网关，可在 `.env` 中配置 `OBSERVABILITY_EXPORT_URL`，并按需设置 `OBSERVABILITY_API_KEY`。导出在后台队列中执行，观测服务不可用时不会阻塞对话和 Workflow 主链路；未配置端点时继续使用内存记录器。
