@@ -8,6 +8,7 @@ from app.data_models import (
     OrderRecord,
     RetrievalHit,
     RetrievalRecord,
+    UserFeedback,
 )
 from app.database import DatabaseManager, DatabaseNotInitializedError
 from app.repositories import (
@@ -15,6 +16,7 @@ from app.repositories import (
     OrderRepository,
     RecordNotFoundError,
     RetrievalRecordRepository,
+    UserFeedbackRepository,
     initialize_schema,
 )
 
@@ -92,6 +94,35 @@ async def test_retrieval_repository_round_trips_ranked_hits(database):
 
 
 @pytest.mark.asyncio
+async def test_user_feedback_repository_persists_and_filters_feedback(database):
+    repository = UserFeedbackRepository(database)
+    positive = UserFeedback(
+        feedback_id=uuid4(),
+        request_id="request-1",
+        trace_id="trace-1",
+        rating="helpful",
+        created_at=NOW,
+    )
+    negative = UserFeedback(
+        feedback_id=uuid4(),
+        request_id="request-2",
+        trace_id="trace-2",
+        rating="unhelpful",
+        reason="检索结果不相关",
+        created_at=NOW,
+    )
+
+    await repository.save(positive)
+    await repository.save(negative)
+
+    assert await repository.get(positive.feedback_id) == positive
+    assert {item.feedback_id for item in await repository.list_recent()} == {
+        positive.feedback_id, negative.feedback_id
+    }
+    assert await repository.list_recent(request_id="request-2") == [negative]
+
+
+@pytest.mark.asyncio
 async def test_repositories_report_missing_records(database):
     with pytest.raises(RecordNotFoundError, match="ORD-404"):
         await OrderRepository(database).get("ORD-404")
@@ -99,6 +130,8 @@ async def test_repositories_report_missing_records(database):
         await KnowledgeDocumentRepository(database).get(uuid4())
     with pytest.raises(RecordNotFoundError, match="retrieval record"):
         await RetrievalRecordRepository(database).get(uuid4())
+    with pytest.raises(RecordNotFoundError, match="feedback"):
+        await UserFeedbackRepository(database).get(uuid4())
 
 
 @pytest.mark.asyncio

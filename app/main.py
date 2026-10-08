@@ -1,10 +1,16 @@
 import json
+from datetime import datetime, timezone
+from typing import Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
+from app.data_models import UserFeedback
+from app.database import DatabaseManager
 from app.embeddings import HashEmbeddingProvider
 from app.contracts import (
     AfterSalesExtractionRequest,
@@ -20,6 +26,7 @@ from app.knowledge_base import (
 )
 from app.providers import ModelProviderError, StubModelProvider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
+from app.repositories import UserFeedbackRepository, initialize_schema
 from app.vector_store import InMemoryVectorStore
 from app.workflow_runtime import (
     WorkflowRunRequest,
@@ -35,7 +42,27 @@ from app.workflow_checkpoints import (
 )
 
 
+class FeedbackSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    rating: Literal["helpful", "unhelpful"]
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class FeedbackSubmissionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feedback_id: str
+    status: str = "saved"
+
+
 app = FastAPI(title="CartPilot")
+feedback_database = DatabaseManager("sqlite:///./data/cartpilot.db")
+feedback_database.open()
+initialize_schema(feedback_database)
+app.state.feedback_repository = UserFeedbackRepository(feedback_database)
 default_provider = StubModelProvider()
 app.state.chat_service = ChatService(
     session_store=InMemorySessionStore(),
@@ -49,6 +76,23 @@ app.state.knowledge_base_service = KnowledgeBaseService(
     model_provider=default_provider,
 )
 app.state.workflow_runtime = default_workflow_runtime()
+
+
+@app.post("/feedback", response_model=FeedbackSubmissionResponse, status_code=201)
+async def submit_feedback(
+    submission: FeedbackSubmission, http_request: Request
+) -> FeedbackSubmissionResponse:
+    feedback = UserFeedback(
+        feedback_id=uuid4(),
+        request_id=submission.request_id,
+        trace_id=submission.trace_id,
+        rating=submission.rating,
+        reason=submission.reason,
+        created_at=datetime.now(timezone.utc),
+    )
+    repository: UserFeedbackRepository = http_request.app.state.feedback_repository
+    await repository.save(feedback)
+    return FeedbackSubmissionResponse(feedback_id=str(feedback.feedback_id))
 
 
 @app.get("/healthz")

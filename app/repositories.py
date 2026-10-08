@@ -1,7 +1,7 @@
 import json
 from uuid import UUID
 
-from app.data_models import KnowledgeDocument, OrderRecord, RetrievalRecord
+from app.data_models import KnowledgeDocument, OrderRecord, RetrievalRecord, UserFeedback
 from app.database import DatabaseManager
 
 
@@ -36,6 +36,18 @@ def initialize_schema(database: DatabaseManager) -> None:
             );
             CREATE INDEX IF NOT EXISTS ix_retrieval_records_created_at
                 ON retrieval_records (created_at);
+            CREATE TABLE IF NOT EXISTS user_feedback (
+                feedback_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                trace_id TEXT,
+                rating TEXT NOT NULL CHECK (rating IN ('helpful', 'unhelpful')),
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_user_feedback_created_at
+                ON user_feedback (created_at DESC, feedback_id);
+            CREATE INDEX IF NOT EXISTS ix_user_feedback_request_id
+                ON user_feedback (request_id);
             """
         )
 
@@ -166,6 +178,57 @@ class RetrievalRecordRepository:
             (limit,),
         ).fetchall()
         return [RetrievalRecord.model_validate_json(row["payload"]) for row in rows]
+
+
+class UserFeedbackRepository:
+    def __init__(self, database: DatabaseManager) -> None:
+        self._database = database
+
+    async def save(self, feedback: UserFeedback) -> UserFeedback:
+        with self._database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_feedback
+                    (feedback_id, request_id, trace_id, rating, created_at, payload)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(feedback.feedback_id),
+                    feedback.request_id,
+                    feedback.trace_id,
+                    feedback.rating,
+                    feedback.created_at.isoformat(),
+                    feedback.model_dump_json(),
+                ),
+            )
+        return feedback.model_copy(deep=True)
+
+    async def get(self, feedback_id: UUID) -> UserFeedback:
+        row = self._database.connection.execute(
+            "SELECT payload FROM user_feedback WHERE feedback_id = ?",
+            (str(feedback_id),),
+        ).fetchone()
+        if row is None:
+            raise RecordNotFoundError(f"feedback not found: {feedback_id}")
+        return UserFeedback.model_validate_json(row["payload"])
+
+    async def list_recent(
+        self, limit: int = 50, *, request_id: str | None = None
+    ) -> list[UserFeedback]:
+        _validate_limit(limit)
+        if request_id is None:
+            rows = self._database.connection.execute(
+                "SELECT payload FROM user_feedback "
+                "ORDER BY created_at DESC, feedback_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = self._database.connection.execute(
+                "SELECT payload FROM user_feedback WHERE request_id = ? "
+                "ORDER BY created_at DESC, feedback_id LIMIT ?",
+                (request_id, limit),
+            ).fetchall()
+        return [UserFeedback.model_validate_json(row["payload"]) for row in rows]
 
 
 def _validate_limit(limit: int) -> None:
