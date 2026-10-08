@@ -43,6 +43,10 @@ class KnowledgeQueryResponse(BaseModel):
     query: str
     answer: str = Field(min_length=1)
     sources: list[KnowledgeSource] = Field(default_factory=list)
+    confidence_accepted: bool
+    confidence_score: float | None = None
+    confidence_reason: str = Field(min_length=1)
+    low_quality: bool
 
 
 @dataclass(slots=True)
@@ -63,7 +67,7 @@ class KnowledgeBaseService:
             query_vector = await self.embedding_provider.embed(request.query)
             matches = await self.vector_store.search(query_vector, request.top_k)
             decision = self.confidence_policy.evaluate(matches)
-            if matches and not decision.accepted:
+            if not decision.accepted:
                 answer = self.low_confidence_message
             else:
                 answer = await self._generate_answer(request.query, matches)
@@ -99,6 +103,10 @@ class KnowledgeBaseService:
             query=request.query,
             answer=answer,
             sources=sources,
+            confidence_accepted=decision.accepted,
+            confidence_score=decision.top_score,
+            confidence_reason=decision.reason,
+            low_quality=not decision.accepted,
         )
 
     async def _generate_answer(
