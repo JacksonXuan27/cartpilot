@@ -89,6 +89,26 @@ def test_sqlite_checkpoint_store_persists_and_restores_workflow(tmp_path: Path):
     restored_store.close()
 
 
+def test_sqlite_checkpoint_store_preserves_assistant_tool_calls(tmp_path: Path):
+    tool_message = ChatMessage.assistant_tool_call(
+        "",
+        [
+            {"id": "call-1", "name": "test.echo", "arguments": {"value": "hello"}}
+        ],
+    )
+    checkpoint = make_checkpoint()
+    checkpoint.state.data["messages"].append(tool_message)
+    store = SQLiteWorkflowCheckpointStore(
+        DatabaseManager(f"sqlite:///{tmp_path / 'tool-calls.db'}")
+    )
+
+    store.save_pending(checkpoint)
+    restored = store.claim("confirmation-1")
+
+    assert restored.state.data["messages"][-1] == tool_message
+    store.close()
+
+
 def test_sqlite_checkpoint_store_rejects_duplicate_claim(tmp_path: Path):
     store = SQLiteWorkflowCheckpointStore(DatabaseManager(f"sqlite:///{tmp_path / 'workflow.db'}"))
     store.save_pending(make_checkpoint())

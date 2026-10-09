@@ -218,6 +218,7 @@ def _encode_value(value: object) -> object:
             "role": value.role,
             "content": value.content,
             "tool_call_id": value.tool_call_id,
+            "tool_calls": [call.model_dump(mode="json") for call in value.tool_calls],
         }
     if isinstance(value, Enum):
         return value.value
@@ -237,6 +238,14 @@ def _decode_value(value: object) -> object:
         return [_decode_value(item) for item in value]
     if isinstance(value, dict):
         if value.get("__type__") == "ChatMessage":
+            tool_calls = value.get("tool_calls", [])
+            if tool_calls:
+                if value.get("role") != "assistant":
+                    raise ValueError("tool calls require an assistant message")
+                message = ChatMessage.assistant_tool_call(
+                    value["content"], tool_calls
+                )
+                return message
             return ChatMessage(
                 role=value["role"],
                 content=value["content"],

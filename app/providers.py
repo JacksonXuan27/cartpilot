@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
-from app.contracts import ChatMessage, TokenUsage
+from app.contracts import ChatMessage, TokenUsage, ToolCallMessage
 
 
 class ModelProviderError(RuntimeError):
@@ -112,19 +112,17 @@ class OpenAICompatibleChatProvider:
     ) -> ModelResult:
         if not messages:
             raise ModelProviderError("at least one message is required")
-        if tools:
-            raise ModelProviderError("tool calling is not supported by this provider")
-
         try:
-            response = await self._model.ainvoke(_to_langchain_messages(messages))
+            model = self._model
+            if tools:
+                model = model.bind_tools(_to_openai_tools(tools))
+            response = await model.ainvoke(_to_langchain_messages(messages))
         except Exception as exc:
             raise ModelProviderError("chat model request failed") from exc
 
-        if getattr(response, "tool_calls", ()):
-            raise ModelProviderError("tool calling is not supported by this provider")
-
+        tool_calls = _response_tool_calls(response)
         content = _response_text(getattr(response, "content", None))
-        if not content:
+        if not content and not tool_calls:
             raise ModelProviderError("chat model returned an empty response")
 
         usage_metadata = getattr(response, "usage_metadata", None) or {}
@@ -136,11 +134,27 @@ class OpenAICompatibleChatProvider:
                 total_tokens=int(usage_metadata.get("total_tokens", 0)),
             )
         response_metadata = getattr(response, "response_metadata", None) or {}
-        finish_reason = str(response_metadata.get("finish_reason") or "stop")
+        finish_reason = "tool_call" if tool_calls else str(
+            response_metadata.get("finish_reason") or "stop"
+        )
+        tool_messages = [
+            ToolCallMessage(
+                id=call.call_id,
+                name=call.name,
+                arguments=dict(call.arguments),
+            )
+            for call in tool_calls
+        ]
+        message = (
+            ChatMessage.assistant_tool_call(content, tool_messages)
+            if tool_calls
+            else ChatMessage(role="assistant", content=content)
+        )
         return ModelResult(
-            message=ChatMessage(role="assistant", content=content),
+            message=message,
             finish_reason=finish_reason,
             usage=usage,
+            tool_calls=tuple(tool_calls),
         )
 
     async def _stream(
@@ -202,6 +216,58 @@ def create_chat_model_provider(
     return OpenAICompatibleChatProvider(model)
 
 
+def _to_openai_tools(tools: Sequence[object]) -> list[dict[str, object]]:
+    converted: list[dict[str, object]] = []
+    for tool in tools:
+        payload = tool.model_dump() if hasattr(tool, "model_dump") else tool
+        if not isinstance(payload, Mapping):
+            raise ModelProviderError("tool definition must be a mapping")
+        name = payload.get("name")
+        description = payload.get("description")
+        parameters = payload.get("input_schema", payload.get("parameters"))
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(description, str)
+            or not isinstance(parameters, Mapping)
+        ):
+            raise ModelProviderError("tool definition is invalid")
+        converted.append(
+            {
+                "name": name,
+                "description": description,
+                "parameters": dict(parameters),
+            }
+        )
+    return converted
+
+
+def _response_tool_calls(response: object) -> list[ToolCall]:
+    raw_tool_calls = getattr(response, "tool_calls", None) or ()
+    if not isinstance(raw_tool_calls, (list, tuple)):
+        raise ModelProviderError("chat model returned invalid tool calls")
+
+    tool_calls = []
+    for raw_call in raw_tool_calls:
+        if not isinstance(raw_call, Mapping):
+            raise ModelProviderError("chat model returned an invalid tool call")
+        name = raw_call.get("name")
+        arguments = raw_call.get("args")
+        call_id = raw_call.get("id")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(arguments, Mapping)
+            or not isinstance(call_id, str)
+            or not call_id.strip()
+        ):
+            raise ModelProviderError("chat model returned an invalid tool call")
+        tool_calls.append(
+            ToolCall(name=name, arguments=dict(arguments), call_id=call_id)
+        )
+    return tool_calls
+
+
 def _to_langchain_messages(messages: Sequence[ChatMessage]) -> list[object]:
     converted: list[object] = []
     for message in messages:
@@ -210,7 +276,20 @@ def _to_langchain_messages(messages: Sequence[ChatMessage]) -> list[object]:
         elif message.role == "user":
             converted.append(HumanMessage(content=message.content))
         elif message.role == "assistant":
-            converted.append(AIMessage(content=message.content))
+            converted.append(
+                AIMessage(
+                    content=message.content,
+                    tool_calls=[
+                        {
+                            "name": call.name,
+                            "args": call.arguments,
+                            "id": call.id,
+                            "type": "tool_call",
+                        }
+                        for call in message.tool_calls
+                    ],
+                )
+            )
         else:
             converted.append(
                 ToolMessage(

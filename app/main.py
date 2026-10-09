@@ -92,7 +92,7 @@ app.state.knowledge_base_service = KnowledgeBaseService(
     vector_store=InMemoryVectorStore(dimension=64),
     model_provider=default_provider,
 )
-app.state.workflow_runtime = default_workflow_runtime()
+app.state.workflow_runtime = default_workflow_runtime(default_provider)
 
 
 @app.post("/feedback", response_model=FeedbackSubmissionResponse, status_code=201)

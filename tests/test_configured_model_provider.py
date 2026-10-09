@@ -3,7 +3,6 @@ import pytest
 from app.config import Settings
 from app.contracts import ChatMessage, TokenUsage
 from app.providers import (
-    ModelProviderError,
     OpenAICompatibleChatProvider,
     StubModelProvider,
     create_chat_model_provider,
@@ -23,6 +22,11 @@ class FakeChatModel:
         self.response = response or FakeAIMessage("Hello from the model")
         self.chunks = chunks or []
         self.received_messages = None
+        self.bound_tools = None
+
+    def bind_tools(self, tools):
+        self.bound_tools = tools
+        return self
 
     async def ainvoke(self, messages):
         self.received_messages = messages
@@ -128,11 +132,25 @@ async def test_openai_provider_streams_text_and_finish_reason():
 
 
 @pytest.mark.asyncio
-async def test_openai_provider_rejects_tools_until_tool_roundtrip_is_supported():
-    provider = OpenAICompatibleChatProvider(FakeChatModel())
+async def test_openai_provider_binds_tool_schemas_before_completion():
+    model = FakeChatModel(FakeAIMessage("Answer"))
+    provider = OpenAICompatibleChatProvider(model)
+    tool = {
+        "name": "order.query",
+        "description": "Query an order.",
+        "input_schema": {"type": "object", "properties": {}},
+    }
 
-    with pytest.raises(ModelProviderError, match="tool calling is not supported"):
-        await provider.complete(
-            [ChatMessage(role="user", content="Check my order")],
-            tools=[{"name": "order_lookup"}],
-        )
+    result = await provider.complete(
+        [ChatMessage(role="user", content="Check my order")],
+        tools=[tool],
+    )
+
+    assert result.message.content == "Answer"
+    assert model.bound_tools == [
+        {
+            "name": "order.query",
+            "description": "Query an order.",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
