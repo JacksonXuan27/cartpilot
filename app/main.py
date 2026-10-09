@@ -24,7 +24,8 @@ from app.knowledge_base import (
     KnowledgeQueryRequest,
     KnowledgeQueryResponse,
 )
-from app.providers import ModelProviderError, StubModelProvider
+from app.config import get_settings
+from app.providers import ModelProviderError, create_chat_model_provider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
 from app.repositories import RecordNotFoundError, UserFeedbackRepository, initialize_schema
 from app.vector_store import InMemoryVectorStore
@@ -79,7 +80,7 @@ feedback_database = DatabaseManager("sqlite:///./data/cartpilot.db")
 feedback_database.open()
 initialize_schema(feedback_database)
 app.state.feedback_repository = UserFeedbackRepository(feedback_database)
-default_provider = StubModelProvider()
+default_provider = create_chat_model_provider(get_settings())
 app.state.chat_service = ChatService(
     session_store=InMemorySessionStore(),
     model_provider=default_provider,

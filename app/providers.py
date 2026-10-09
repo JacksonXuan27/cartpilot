@@ -1,7 +1,11 @@
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+
+from app.config import Settings
 from app.contracts import ChatMessage, TokenUsage
 
 
@@ -79,7 +83,9 @@ class StubModelProvider:
             usage=self.usage,
         )
 
-    async def _stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[ModelChunk]:
+    async def _stream(
+        self, messages: Sequence[ChatMessage]
+    ) -> AsyncIterator[ModelChunk]:
         conversation = tuple(message.model_copy(deep=True) for message in messages)
         if not conversation:
             raise ModelProviderError("at least one message is required")
@@ -93,3 +99,137 @@ class StubModelProvider:
 
     def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[ModelChunk]:
         return self._stream(messages)
+
+
+class OpenAICompatibleChatProvider:
+    def __init__(self, model: object) -> None:
+        self._model = model
+
+    async def complete(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[object] = (),
+    ) -> ModelResult:
+        if not messages:
+            raise ModelProviderError("at least one message is required")
+        if tools:
+            raise ModelProviderError("tool calling is not supported by this provider")
+
+        try:
+            response = await self._model.ainvoke(_to_langchain_messages(messages))
+        except Exception as exc:
+            raise ModelProviderError("chat model request failed") from exc
+
+        if getattr(response, "tool_calls", ()):
+            raise ModelProviderError("tool calling is not supported by this provider")
+
+        content = _response_text(getattr(response, "content", None))
+        if not content:
+            raise ModelProviderError("chat model returned an empty response")
+
+        usage_metadata = getattr(response, "usage_metadata", None) or {}
+        usage = None
+        if usage_metadata:
+            usage = TokenUsage(
+                prompt_tokens=int(usage_metadata.get("input_tokens", 0)),
+                completion_tokens=int(usage_metadata.get("output_tokens", 0)),
+                total_tokens=int(usage_metadata.get("total_tokens", 0)),
+            )
+        response_metadata = getattr(response, "response_metadata", None) or {}
+        finish_reason = str(response_metadata.get("finish_reason") or "stop")
+        return ModelResult(
+            message=ChatMessage(role="assistant", content=content),
+            finish_reason=finish_reason,
+            usage=usage,
+        )
+
+    async def _stream(
+        self, messages: Sequence[ChatMessage]
+    ) -> AsyncIterator[ModelChunk]:
+        if not messages:
+            raise ModelProviderError("at least one message is required")
+
+        try:
+            async for response_chunk in self._model.astream(
+                _to_langchain_messages(messages)
+            ):
+                if getattr(response_chunk, "tool_call_chunks", ()):
+                    raise ModelProviderError(
+                        "tool calling is not supported by this provider"
+                    )
+                content = _response_text(getattr(response_chunk, "content", None))
+                metadata = getattr(response_chunk, "response_metadata", None) or {}
+                finish_reason = metadata.get("finish_reason")
+                if content or finish_reason:
+                    yield ModelChunk(delta=content, finish_reason=finish_reason)
+        except ModelProviderError:
+            raise
+        except Exception as exc:
+            raise ModelProviderError("chat model stream failed") from exc
+
+    def stream(self, messages: Sequence[ChatMessage]) -> AsyncIterator[ModelChunk]:
+        return self._stream(messages)
+
+
+def create_chat_model_provider(
+    settings: Settings,
+    model_factory: Callable[..., object] | None = None,
+) -> ChatModelProvider:
+    if settings.chat_provider == "stub":
+        return StubModelProvider()
+
+    missing = [
+        name
+        for name, value in (
+            ("CHAT_MODEL", settings.chat_model),
+            ("CHAT_BASE_URL", settings.chat_base_url),
+            ("CHAT_API_KEY", settings.chat_api_key),
+        )
+        if not value or not value.strip()
+    ]
+    if missing:
+        missing_names = ", ".join(missing)
+        raise ValueError(
+            f"{missing_names} required for openai-compatible provider"
+        )
+
+    factory = model_factory or ChatOpenAI
+    model = factory(
+        model=settings.chat_model,
+        base_url=settings.chat_base_url,
+        api_key=settings.chat_api_key,
+    )
+    return OpenAICompatibleChatProvider(model)
+
+
+def _to_langchain_messages(messages: Sequence[ChatMessage]) -> list[object]:
+    converted: list[object] = []
+    for message in messages:
+        if message.role == "system":
+            converted.append(SystemMessage(content=message.content))
+        elif message.role == "user":
+            converted.append(HumanMessage(content=message.content))
+        elif message.role == "assistant":
+            converted.append(AIMessage(content=message.content))
+        else:
+            converted.append(
+                ToolMessage(
+                    content=message.content,
+                    tool_call_id=message.tool_call_id or "unknown",
+                )
+            )
+    return converted
+
+
+def _response_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item["text"]
+            for item in content
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        )
+    return ""
