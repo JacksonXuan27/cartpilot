@@ -4,6 +4,14 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from uuid import uuid4
+
+from app.observability import (
+    TraceRecorder,
+    observability_exporter_from_env,
+    record_span,
+    start_span,
+)
 
 
 class RetrievalEvaluationError(ValueError):
@@ -168,6 +176,35 @@ def evaluate_retrieval(
     )
 
 
+def record_evaluation_summary(
+    report: EvaluationReport,
+    recorder: TraceRecorder,
+    dataset_path: str | Path,
+    rankings_path: str | Path,
+) -> None:
+    span_id, started_at, started_monotonic = start_span()
+    attributes: dict[str, str | int | float | bool] = {
+        "evaluation.query_count": report.query_count,
+        "evaluation.dataset": Path(dataset_path).name,
+        "evaluation.rankings": Path(rankings_path).name,
+        "evaluation.cutoffs": ",".join(str(cutoff) for cutoff in report.cutoffs),
+    }
+    for cutoff, metrics in report.aggregate.items():
+        for metric_name, value in metrics.items():
+            attributes[f"evaluation.{metric_name}@{cutoff}"] = value
+    record_span(
+        recorder,
+        trace_id=str(uuid4()),
+        span_id=span_id,
+        parent_span_id=None,
+        name="retrieval.evaluation",
+        status="completed",
+        started_at=started_at,
+        started_monotonic=started_monotonic,
+        attributes=attributes,
+    )
+
+
 def render_markdown_report(
     report: EvaluationReport, dataset_path: str | Path, rankings_path: str | Path
 ) -> str:
@@ -269,6 +306,17 @@ def main() -> None:
         output_path = Path(arguments.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered, encoding="utf-8")
+        exporter = observability_exporter_from_env()
+        if exporter is not None:
+            try:
+                record_evaluation_summary(
+                    report,
+                    exporter,
+                    arguments.dataset,
+                    arguments.rankings,
+                )
+            finally:
+                exporter.close()
     except (RetrievalEvaluationError, ValueError) as exc:
         parser.error(str(exc))
     print(f"Wrote {arguments.output} ({report.query_count} queries)")
