@@ -31,6 +31,8 @@ uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir 
 
 输出目录包含三个切分后的 JSONL 文件和 `manifest.json`；清单记录输入文件 SHA-256、随机种子、各切分样本量及标签分布，不保存样本文本。
 
+训练配置入口 `app.classifier_training` 定义了 RoBERTa 模型标识、优化超参数和 `auto`/`cpu`/`cuda` 设备偏好；目前只包含可独立测试的配置校验与设备选择逻辑，尚未加载 PyTorch/Transformers、执行训练，也未验证本机 GPU。
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。
