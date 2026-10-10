@@ -1,4 +1,11 @@
+from __future__ import annotations
+
+import argparse
 import json
+import random
+import re
+from collections import defaultdict
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Literal
@@ -22,6 +29,19 @@ class TrainingDataSplit(str, Enum):
     TRAIN = "train"
     VALIDATION = "validation"
     TEST = "test"
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingDatasetSplits:
+    train: tuple[TrainingExample, ...]
+    validation: tuple[TrainingExample, ...]
+    test: tuple[TrainingExample, ...]
+
+
+_WHITESPACE = re.compile(r"\s+")
+_PHONE_NUMBER = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
+_LONG_NUMBER = re.compile(r"\d{10,}")
+_SOCIAL_ACCOUNT = re.compile(r"(微信|weixin|wx|QQ)[号:: ]*[A-Za-z0-9_-]{5,}\s?", re.IGNORECASE)
 
 
 TOPIC_TAXONOMY: dict[IntentCategory, str] = {
@@ -52,7 +72,129 @@ class TrainingExample(BaseModel):
     split: TrainingDataSplit | None = None
 
     def normalized_text(self) -> str:
-        return " ".join(self.text.split())
+        text = _PHONE_NUMBER.sub("[手机号]", self.text)
+        text = _LONG_NUMBER.sub("[单号]", text)
+        text = _SOCIAL_ACCOUNT.sub(lambda match: f"{match.group(1)}[账号]", text)
+        return _WHITESPACE.sub(" ", text).strip()
+
+
+def prepare_training_dataset(
+    examples: list[TrainingExample], *, seed: int = 42
+) -> TrainingDatasetSplits:
+    if not examples:
+        raise ClassifierDataError("training dataset cannot be empty")
+    labels_by_text: dict[str, IntentCategory] = {}
+    seen_ids: set[str] = set()
+    explicit_split_by_text: dict[str, TrainingDataSplit] = {}
+    first_by_text: dict[str, TrainingExample] = {}
+    for example in examples:
+        if example.example_id in seen_ids:
+            raise ClassifierDataError(
+                f"duplicate example_id: {example.example_id}"
+            )
+        seen_ids.add(example.example_id)
+        text = example.normalized_text()
+        if not text:
+            raise ClassifierDataError(
+                f"training text cannot be blank: {example.example_id}"
+            )
+        previous_label = labels_by_text.get(text)
+        if previous_label is not None and previous_label is not example.label:
+            raise ClassifierDataError(
+                f"conflicting labels for normalized text: {text}"
+            )
+        if example.split is not None:
+            previous_split = explicit_split_by_text.get(text)
+            if previous_split is not None and previous_split is not example.split:
+                raise ClassifierDataError(
+                    f"text appears in multiple splits: {text}"
+                )
+            explicit_split_by_text[text] = example.split
+        labels_by_text[text] = example.label
+        if text in first_by_text:
+            continue
+        normalized = example.model_copy(update={"text": text})
+        first_by_text[text] = normalized
+
+    preassigned: dict[TrainingDataSplit, list[TrainingExample]] = {
+        split: [] for split in TrainingDataSplit
+    }
+    unseen: dict[IntentCategory, list[TrainingExample]] = defaultdict(list)
+    for example in first_by_text.values():
+        assigned_split = explicit_split_by_text.get(example.text, example.split)
+        if assigned_split is None:
+            unseen[example.label].append(example)
+            continue
+        preassigned[assigned_split].append(
+            example.model_copy(update={"split": assigned_split})
+        )
+
+    generator = random.Random(seed)
+    for label in sorted(unseen, key=lambda item: item.value):
+        items = unseen[label]
+        generator.shuffle(items)
+        count = len(items)
+        if count < 3:
+            preassigned[TrainingDataSplit.TRAIN].extend(items)
+            continue
+        test_count = max(1, round(count * 0.1))
+        validation_count = max(1, round(count * 0.1))
+        preassigned[TrainingDataSplit.TEST].extend(items[:test_count])
+        preassigned[TrainingDataSplit.VALIDATION].extend(
+            items[test_count:test_count + validation_count]
+        )
+        preassigned[TrainingDataSplit.TRAIN].extend(
+            items[test_count + validation_count:]
+        )
+
+    prepared: dict[TrainingDataSplit, tuple[TrainingExample, ...]] = {}
+    for split, items in preassigned.items():
+        prepared[split] = tuple(
+            sorted(
+                (
+                    item.model_copy(update={"split": split})
+                    for item in items
+                ),
+                key=lambda item: item.example_id,
+            )
+        )
+    return TrainingDatasetSplits(
+        train=prepared[TrainingDataSplit.TRAIN],
+        validation=prepared[TrainingDataSplit.VALIDATION],
+        test=prepared[TrainingDataSplit.TEST],
+    )
+
+
+def write_training_dataset_splits(
+    splits: TrainingDatasetSplits, output_dir: str | Path
+) -> dict[TrainingDataSplit, Path]:
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    written: dict[TrainingDataSplit, Path] = {}
+    split_examples = {
+        TrainingDataSplit.TRAIN: splits.train,
+        TrainingDataSplit.VALIDATION: splits.validation,
+        TrainingDataSplit.TEST: splits.test,
+    }
+    for split in TrainingDataSplit:
+        examples = split_examples[split]
+        destination = directory / f"{split.value}.jsonl"
+        content = "\n".join(
+            example.model_dump_json()
+            for example in examples
+        )
+        destination.write_text(content + ("\n" if content else ""), encoding="utf-8")
+        written[split] = destination
+    return written
+
+
+def prepare_dataset(
+    input_path: str | Path, output_dir: str | Path, *, seed: int = 42
+) -> TrainingDatasetSplits:
+    examples = load_training_dataset(input_path)
+    splits = prepare_training_dataset(examples, seed=seed)
+    write_training_dataset_splits(splits, output_dir)
+    return splits
 
 
 def load_training_dataset(path: str | Path) -> list[TrainingExample]:
@@ -87,3 +229,29 @@ def load_training_dataset(path: str | Path) -> list[TrainingExample]:
     if not examples:
         raise ClassifierDataError("training dataset cannot be empty")
     return examples
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Normalize and stratify classifier JSONL training data."
+    )
+    parser.add_argument("--input", required=True, help="Input JSONL dataset")
+    parser.add_argument("--output-dir", required=True, help="Output directory")
+    parser.add_argument("--seed", type=int, default=42)
+    arguments = parser.parse_args()
+    splits = prepare_dataset(
+        arguments.input,
+        arguments.output_dir,
+        seed=arguments.seed,
+    )
+    print(
+        "Prepared classifier dataset: "
+        f"train={len(splits.train)}, "
+        f"validation={len(splits.validation)}, "
+        f"test={len(splits.test)}, "
+        f"seed={arguments.seed}"
+    )
+
+
+if __name__ == "__main__":
+    main()

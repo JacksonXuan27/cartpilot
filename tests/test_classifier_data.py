@@ -10,6 +10,8 @@ from app.classifier_data import (
     TrainingDataSplit,
     TrainingExample,
     load_training_dataset,
+    prepare_dataset,
+    prepare_training_dataset,
 )
 from app.intent_routing import IntentCategory
 
@@ -32,6 +34,17 @@ def test_training_example_accepts_versioned_provenance_and_optional_split():
     assert example.normalized_text() == "我的快递 到哪了"
     assert example.label is IntentCategory.LOGISTICS
     assert example.split is TrainingDataSplit.TRAIN
+
+
+def test_training_example_normalization_masks_personal_and_order_identifiers():
+    example = TrainingExample(
+        example_id="private-sample",
+        text="电话 13800138000，订单 123456789012，微信号 alice_12345",
+        label=IntentCategory.ORDER,
+        source=TrainingDataSource.HUMAN_ANNOTATED,
+    )
+
+    assert example.normalized_text() == "电话 [手机号]，订单 [单号]，微信[账号]"
 
 
 def test_training_example_rejects_unknown_labels_and_extra_fields():
@@ -143,3 +156,206 @@ def test_training_dataset_loader_rejects_duplicate_ids_and_empty_files(tmp_path)
     dataset.write_text("\n", encoding="utf-8")
     with pytest.raises(ClassifierDataError, match="cannot be empty"):
         load_training_dataset(dataset)
+
+
+def test_dataset_preparation_normalizes_deduplicates_and_stratifies_reproducibly():
+    examples = [
+        TrainingExample(
+            example_id=f"logistics-{index}",
+            text=f"  查询物流进度 {index}  ",
+            label=IntentCategory.LOGISTICS,
+            source=TrainingDataSource.HUMAN_ANNOTATED,
+        )
+        for index in range(10)
+    ] + [
+        TrainingExample(
+            example_id=f"order-{index}",
+            text=f"  查询订单状态 {index}  ",
+            label=IntentCategory.ORDER,
+            source=TrainingDataSource.REVIEWED_FEEDBACK,
+        )
+        for index in range(10)
+    ]
+    examples.append(
+        TrainingExample(
+            example_id="logistics-duplicate",
+            text="查询物流进度 0",
+            label=IntentCategory.LOGISTICS,
+            source=TrainingDataSource.HUMAN_ANNOTATED,
+        )
+    )
+
+    first = prepare_training_dataset(examples, seed=17)
+    second = prepare_training_dataset(examples, seed=17)
+
+    assert len(first.train) == 16
+    assert len(first.validation) == 2
+    assert len(first.test) == 2
+    assert [item.example_id for item in first.train] == [
+        item.example_id for item in second.train
+    ]
+    assert all(item.text == item.normalized_text() for item in first.train)
+    assert all(item.split is TrainingDataSplit.TRAIN for item in first.train)
+    assert all(item.split is TrainingDataSplit.VALIDATION for item in first.validation)
+    assert all(item.split is TrainingDataSplit.TEST for item in first.test)
+    assert {
+        item.label for item in first.train
+    } == {IntentCategory.LOGISTICS, IntentCategory.ORDER}
+
+
+def test_dataset_preparation_keeps_tiny_classes_in_training():
+    examples = [
+        TrainingExample(
+            example_id=f"sample-{index}",
+            text=f"咨询内容 {index}",
+            label=IntentCategory.COMPLAINT,
+            source=TrainingDataSource.SYNTHETIC,
+        )
+        for index in range(2)
+    ]
+
+    splits = prepare_training_dataset(examples)
+
+    assert len(splits.train) == 2
+    assert not splits.validation
+    assert not splits.test
+
+
+def test_dataset_preparation_rejects_conflicting_duplicate_text_labels():
+    examples = [
+        TrainingExample(
+            example_id="sample-1",
+            text="订单到了吗",
+            label=IntentCategory.ORDER,
+            source=TrainingDataSource.HUMAN_ANNOTATED,
+        ),
+        TrainingExample(
+            example_id="sample-2",
+            text=" 订单到了吗 ",
+            label=IntentCategory.LOGISTICS,
+            source=TrainingDataSource.HUMAN_ANNOTATED,
+        ),
+    ]
+
+    with pytest.raises(ClassifierDataError, match="conflicting labels"):
+        prepare_training_dataset(examples)
+
+
+def test_dataset_preparation_rejects_cross_split_text_leakage():
+    examples = [
+        TrainingExample(
+            example_id="train-sample",
+            text="查一下订单",
+            label=IntentCategory.ORDER,
+            source=TrainingDataSource.HUMAN_ANNOTATED,
+            split=TrainingDataSplit.TRAIN,
+        ),
+        TrainingExample(
+            example_id="test-sample",
+            text=" 查一下订单 ",
+            label=IntentCategory.ORDER,
+            source=TrainingDataSource.HUMAN_ANNOTATED,
+            split=TrainingDataSplit.TEST,
+        ),
+    ]
+
+    with pytest.raises(ClassifierDataError, match="text appears in multiple splits"):
+        prepare_training_dataset(examples)
+
+
+def test_prepare_dataset_writes_reproducible_utf8_jsonl_outputs(tmp_path):
+    source = tmp_path / "input.jsonl"
+    output_dir = tmp_path / "prepared"
+    source.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "example_id": f"sample-{index}",
+                    "text": f"  查询物流进度 {index}  ",
+                    "label": "logistics",
+                    "source": "human_annotated",
+                },
+                ensure_ascii=False,
+            )
+            for index in range(10)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    splits = prepare_dataset(source, output_dir, seed=9)
+
+    assert len(splits.train) + len(splits.validation) + len(splits.test) == 10
+    assert all(
+        (output_dir / f"{split}.jsonl").exists()
+        for split in ("train", "validation", "test")
+    )
+    test_examples = load_training_dataset(output_dir / "test.jsonl")
+    assert all(item.split is TrainingDataSplit.TEST for item in test_examples)
+    assert "查询物流进度" in (output_dir / "train.jsonl").read_text(encoding="utf-8")
+
+
+def test_dataset_preparation_rejects_duplicate_ids_and_empty_input():
+    example = TrainingExample(
+        example_id="same-id",
+        text="咨询物流",
+        label=IntentCategory.LOGISTICS,
+        source=TrainingDataSource.HUMAN_ANNOTATED,
+    )
+
+    with pytest.raises(ClassifierDataError, match="duplicate example_id"):
+        prepare_training_dataset(
+            [example, example.model_copy(update={"text": "咨询订单"})]
+        )
+
+    with pytest.raises(ClassifierDataError, match="cannot be empty"):
+        prepare_training_dataset([])
+
+
+def test_prepare_dataset_writes_reproducible_utf8_jsonl_outputs(tmp_path):
+    source = tmp_path / "input.jsonl"
+    output_dir = tmp_path / "prepared"
+    source.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "example_id": f"sample-{index}",
+                    "text": f"  查询物流进度 {index}  ",
+                    "label": "logistics",
+                    "source": "human_annotated",
+                },
+                ensure_ascii=False,
+            )
+            for index in range(10)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    splits = prepare_dataset(source, output_dir, seed=9)
+
+    assert len(splits.train) + len(splits.validation) + len(splits.test) == 10
+    assert all(
+        (output_dir / f"{split}.jsonl").exists()
+        for split in ("train", "validation", "test")
+    )
+    test_examples = load_training_dataset(output_dir / "test.jsonl")
+    assert all(item.split is TrainingDataSplit.TEST for item in test_examples)
+    assert "查询物流进度" in (output_dir / "train.jsonl").read_text(encoding="utf-8")
+
+
+def test_dataset_preparation_rejects_duplicate_ids_and_empty_input():
+    example = TrainingExample(
+        example_id="same-id",
+        text="咨询物流",
+        label=IntentCategory.LOGISTICS,
+        source=TrainingDataSource.HUMAN_ANNOTATED,
+    )
+
+    with pytest.raises(ClassifierDataError, match="duplicate example_id"):
+        prepare_training_dataset(
+            [example, example.model_copy(update={"text": "咨询订单"})]
+        )
+
+    with pytest.raises(ClassifierDataError, match="cannot be empty"):
+        prepare_training_dataset([])
