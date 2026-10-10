@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -310,6 +311,51 @@ def test_dataset_preparation_rejects_duplicate_ids_and_empty_input():
 
     with pytest.raises(ClassifierDataError, match="cannot be empty"):
         prepare_training_dataset([])
+
+
+def test_prepare_dataset_writes_manifest_with_hash_and_split_label_counts(tmp_path):
+    source = tmp_path / "samples.jsonl"
+    output_dir = tmp_path / "prepared"
+    source.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "example_id": f"manifest-{index}",
+                    "text": f"隐私样例 {index}",
+                    "label": "logistics" if index < 5 else "order",
+                    "source": "human_annotated",
+                },
+                ensure_ascii=False,
+            )
+            for index in range(10)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    prepare_dataset(source, output_dir, seed=23)
+
+    manifest_path = output_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["format_version"] == 1
+    assert manifest["seed"] == 23
+    assert manifest["input_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert manifest["total_examples"] == 10
+    assert set(manifest["splits"]) == {"train", "validation", "test"}
+    assert sum(split["examples"] for split in manifest["splits"].values()) == 10
+    assert all(
+        sum(split["labels"].values()) == split["examples"]
+        for split in manifest["splits"].values()
+    )
+    assert all(
+        split["labels"]["logistics"] > 0
+        for split in manifest["splits"].values()
+    )
+    assert "隐私样例" not in manifest_path.read_text(encoding="utf-8")
+
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+    prepare_dataset(source, output_dir, seed=23)
+    assert manifest_path.read_text(encoding="utf-8") == original_manifest
 
 
 def test_prepare_dataset_writes_reproducible_utf8_jsonl_outputs(tmp_path):

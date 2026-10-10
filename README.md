@@ -29,6 +29,8 @@ CartPilot 是一个面向电商客服场景的 AI Agent 服务，逐步提供多
 uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir data/ch10/prepared --seed 42
 ```
 
+输出目录包含三个切分后的 JSONL 文件和 `manifest.json`；清单记录输入文件 SHA-256、随机种子、各切分样本量及标签分布，不保存样本文本。
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。

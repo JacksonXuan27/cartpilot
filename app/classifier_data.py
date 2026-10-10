@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import re
@@ -166,11 +167,15 @@ def prepare_training_dataset(
 
 
 def write_training_dataset_splits(
-    splits: TrainingDatasetSplits, output_dir: str | Path
-) -> dict[TrainingDataSplit, Path]:
+    splits: TrainingDatasetSplits,
+    output_dir: str | Path,
+    *,
+    seed: int,
+    input_sha256: str,
+) -> dict[str, Path]:
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    written: dict[TrainingDataSplit, Path] = {}
+    written: dict[str, Path] = {}
     split_examples = {
         TrainingDataSplit.TRAIN: splits.train,
         TrainingDataSplit.VALIDATION: splits.validation,
@@ -184,7 +189,30 @@ def write_training_dataset_splits(
             for example in examples
         )
         destination.write_text(content + ("\n" if content else ""), encoding="utf-8")
-        written[split] = destination
+        written[split.value] = destination
+
+    manifest = {
+        "format_version": 1,
+        "seed": seed,
+        "input_sha256": input_sha256,
+        "total_examples": sum(len(items) for items in split_examples.values()),
+        "splits": {
+            split.value: {
+                "examples": len(items),
+                "labels": {
+                    label.value: sum(example.label is label for example in items)
+                    for label in IntentCategory
+                },
+            }
+            for split, items in split_examples.items()
+        },
+    }
+    manifest_path = directory / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    written["manifest"] = manifest_path
     return written
 
 
@@ -193,7 +221,13 @@ def prepare_dataset(
 ) -> TrainingDatasetSplits:
     examples = load_training_dataset(input_path)
     splits = prepare_training_dataset(examples, seed=seed)
-    write_training_dataset_splits(splits, output_dir)
+    input_sha256 = hashlib.sha256(Path(input_path).read_bytes()).hexdigest()
+    write_training_dataset_splits(
+        splits,
+        output_dir,
+        seed=seed,
+        input_sha256=input_sha256,
+    )
     return splits
 
 
