@@ -31,9 +31,18 @@ uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir 
 
 输出目录包含三个切分后的 JSONL 文件和 `manifest.json`；清单记录输入文件 SHA-256、随机种子、各切分样本量及标签分布，不保存样本文本。
 
-训练配置入口 `app.classifier_training` 定义了 RoBERTa 模型标识、优化超参数和 `auto`/`cpu`/`cuda` 设备偏好；目前只包含可独立测试的配置校验与设备选择逻辑，尚未加载 PyTorch/Transformers、执行训练，也未验证本机 GPU。
+训练配置入口 `app.classifier_training` 定义了 RoBERTa 模型标识、优化超参数和 `auto`/`cpu`/`cuda` 设备偏好，并提供惰性加载的 Transformers Trainer 训练入口。训练会校验设备、固定随机种子、按 17 类多标签任务加载模型，使用验证集 micro-F1 评估，并把最终模型、Tokenizer 和训练指标写入输出目录；当前尚未使用真实数据执行训练，也未验证本机 GPU。
 
-训练数据适配入口 `app.classifier_dataset` 会校验 train/validation 文件的拆分标记和文本隔离，将 17 类标签编码成多热浮点向量，并将文本交给注入的 tokenizer。该层不依赖 PyTorch/Transformers；完整 Trainer 训练流程尚未实现。
+训练数据适配入口 `app.classifier_dataset` 会校验 train/validation 文件的拆分标记和文本隔离，将 17 类标签编码成多热浮点向量，并将文本交给注入的 tokenizer。该层不依赖 PyTorch/Transformers；训练依赖通过可选的 `ml` 依赖组安装，避免影响普通 API 运行时。
+
+准备好自己的 `train.jsonl` 和 `validation.jsonl` 后，可按需安装训练依赖并调用训练入口：
+
+```powershell
+uv sync --group ml
+uv run --group ml python -c "from app.classifier_training import TrainingRunConfig, run_training; from pathlib import Path; run_training(TrainingRunConfig(Path('data/ch10/dataset/train.jsonl'), Path('data/ch10/dataset/validation.jsonl'), Path('data/ch10/model'), device='cuda'))"
+```
+
+显式指定 `device='cuda'` 时，如果 PyTorch 检测不到 CUDA 会直接失败；这一步只验证训练编排和运行环境，不代表已经完成真实训练验收。
 
 ## 本地启动
 
