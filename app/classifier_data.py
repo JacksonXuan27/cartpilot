@@ -11,9 +11,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app.intent_routing import IntentCategory
+from app.topic_taxonomy import LABEL2ID, TOPIC_CLASSES, TopicLabel
 
 
 class ClassifierDataError(ValueError):
@@ -45,19 +45,6 @@ _LONG_NUMBER = re.compile(r"\d{10,}")
 _SOCIAL_ACCOUNT = re.compile(r"(微信|weixin|wx|QQ)[号:: ]*[A-Za-z0-9_-]{5,}\s?", re.IGNORECASE)
 
 
-TOPIC_TAXONOMY: dict[IntentCategory, str] = {
-    IntentCategory.LOGISTICS: "物流轨迹、配送进度和签收问题",
-    IntentCategory.ORDER: "订单查询、订单状态和订单信息变更",
-    IntentCategory.PRODUCT: "商品属性、使用方式和售前咨询",
-    IntentCategory.REFUND_RETURN: "退款、退货和取消订单后的退款诉求",
-    IntentCategory.AFTER_SALES: "维修、换新、补发及商品质量问题",
-    IntentCategory.COMPLAINT: "投诉、服务争议和负面体验升级",
-    IntentCategory.HUMAN: "明确要求转接人工客服",
-    IntentCategory.SMALLTALK: "问候、感谢、告别等寒暄表达",
-    IntentCategory.OTHER: "不属于已定义业务主题或信息不足的请求",
-}
-
-
 class TrainingExample(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -68,9 +55,16 @@ class TrainingExample(BaseModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
     )
     text: str = Field(min_length=1, max_length=2000)
-    label: IntentCategory
+    labels: tuple[TopicLabel, ...] = Field(min_length=1)
     source: TrainingDataSource
     split: TrainingDataSplit | None = None
+
+    @field_validator("labels")
+    @classmethod
+    def validate_labels(cls, labels: tuple[TopicLabel, ...]) -> tuple[TopicLabel, ...]:
+        if len(set(labels)) != len(labels):
+            raise ValueError("topic labels cannot contain duplicates")
+        return tuple(sorted(labels, key=LABEL2ID.__getitem__))
 
     def normalized_text(self) -> str:
         text = _PHONE_NUMBER.sub("[手机号]", self.text)
@@ -84,7 +78,7 @@ def prepare_training_dataset(
 ) -> TrainingDatasetSplits:
     if not examples:
         raise ClassifierDataError("training dataset cannot be empty")
-    labels_by_text: dict[str, IntentCategory] = {}
+    labels_by_text: dict[str, tuple[TopicLabel, ...]] = {}
     seen_ids: set[str] = set()
     explicit_split_by_text: dict[str, TrainingDataSplit] = {}
     first_by_text: dict[str, TrainingExample] = {}
@@ -99,8 +93,8 @@ def prepare_training_dataset(
             raise ClassifierDataError(
                 f"training text cannot be blank: {example.example_id}"
             )
-        previous_label = labels_by_text.get(text)
-        if previous_label is not None and previous_label is not example.label:
+        previous_labels = labels_by_text.get(text)
+        if previous_labels is not None and previous_labels != example.labels:
             raise ClassifierDataError(
                 f"conflicting labels for normalized text: {text}"
             )
@@ -111,7 +105,7 @@ def prepare_training_dataset(
                     f"text appears in multiple splits: {text}"
                 )
             explicit_split_by_text[text] = example.split
-        labels_by_text[text] = example.label
+        labels_by_text[text] = example.labels
         if text in first_by_text:
             continue
         normalized = example.model_copy(update={"text": text})
@@ -120,19 +114,30 @@ def prepare_training_dataset(
     preassigned: dict[TrainingDataSplit, list[TrainingExample]] = {
         split: [] for split in TrainingDataSplit
     }
-    unseen: dict[IntentCategory, list[TrainingExample]] = defaultdict(list)
+    unseen: dict[tuple[TopicLabel, ...], list[TrainingExample]] = defaultdict(list)
     for example in first_by_text.values():
         assigned_split = explicit_split_by_text.get(example.text, example.split)
         if assigned_split is None:
-            unseen[example.label].append(example)
+            unseen[example.labels].append(example)
             continue
         preassigned[assigned_split].append(
             example.model_copy(update={"split": assigned_split})
         )
 
     generator = random.Random(seed)
-    for label in sorted(unseen, key=lambda item: item.value):
-        items = unseen[label]
+    strata: dict[tuple[TopicLabel, ...], list[TrainingExample]] = defaultdict(list)
+    for label_set, items in unseen.items():
+        stratum = (
+            label_set
+            if len(items) >= 10
+            else (min(label_set, key=LABEL2ID.__getitem__),)
+        )
+        strata[stratum].extend(items)
+
+    for label_set in sorted(
+        strata, key=lambda labels: tuple(LABEL2ID[label] for label in labels)
+    ):
+        items = strata[label_set]
         generator.shuffle(items)
         count = len(items)
         if count < 3:
@@ -200,8 +205,8 @@ def write_training_dataset_splits(
             split.value: {
                 "examples": len(items),
                 "labels": {
-                    label.value: sum(example.label is label for example in items)
-                    for label in IntentCategory
+                    label.value: sum(label in example.labels for example in items)
+                    for label in (item.label for item in TOPIC_CLASSES)
                 },
             }
             for split, items in split_examples.items()
