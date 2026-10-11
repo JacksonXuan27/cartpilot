@@ -33,6 +33,8 @@ uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir 
 
 训练配置入口 `app.classifier_training` 定义了 RoBERTa 模型标识、优化超参数和 `auto`/`cpu`/`cuda` 设备偏好；目前只包含可独立测试的配置校验与设备选择逻辑，尚未加载 PyTorch/Transformers、执行训练，也未验证本机 GPU。
 
+训练数据适配入口 `app.classifier_dataset` 会校验 train/validation 文件的拆分标记和文本隔离，将 17 类标签编码成多热浮点向量，并将文本交给注入的 tokenizer。该层不依赖 PyTorch/Transformers；完整 Trainer 训练流程尚未实现。
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。
