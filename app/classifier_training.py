@@ -1,6 +1,6 @@
+import json
 from dataclasses import dataclass
 from enum import Enum
-import json
 from math import isfinite
 from pathlib import Path
 from typing import Any
@@ -82,19 +82,92 @@ def compute_micro_f1(eval_prediction: Any) -> float:
     predictions, labels = eval_prediction
     if isinstance(predictions, tuple):
         predictions = predictions[0]
-    true_positive = false_positive = false_negative = 0
-    for prediction_row, label_row in zip(predictions, labels):
-        for logit, label in zip(prediction_row, label_row):
-            predicted = _sigmoid(float(logit)) >= 0.5
-            expected = float(label) >= 0.5
+    return build_multilabel_report(predictions, labels)["micro_f1"]
+
+
+def compute_classification_metrics(eval_prediction: Any) -> dict[str, float]:
+    predictions, labels = eval_prediction
+    if isinstance(predictions, tuple):
+        predictions = predictions[0]
+    report = build_multilabel_report(predictions, labels)
+    return {"micro_f1": report["micro_f1"], "macro_f1": report["macro_f1"]}
+
+
+def build_multilabel_report(
+    logits: Any,
+    labels: Any,
+    *,
+    threshold: float = 0.5,
+) -> dict[str, Any]:
+    if not isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError("threshold must be finite and between 0 and 1")
+    if len(logits) == 0 or len(logits) != len(labels):
+        raise ValueError("logits and labels must contain the same non-empty rows")
+
+    per_class_counts = [
+        {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+        for _ in range(NUM_TOPIC_LABELS)
+    ]
+    for logit_row, label_row in zip(logits, labels):
+        if len(logit_row) != NUM_TOPIC_LABELS or len(label_row) != NUM_TOPIC_LABELS:
+            raise ValueError(f"each row must contain {NUM_TOPIC_LABELS} topic values")
+        for index, (logit, label) in enumerate(zip(logit_row, label_row)):
+            numeric_logit = float(logit)
+            numeric_label = float(label)
+            if not isfinite(numeric_logit) or numeric_label not in (0.0, 1.0):
+                raise ValueError("logits must be finite and labels must be binary")
+            predicted = _sigmoid(numeric_logit) >= threshold
+            expected = numeric_label == 1.0
+            counts = per_class_counts[index]
             if predicted and expected:
-                true_positive += 1
+                counts["tp"] += 1
             elif predicted:
-                false_positive += 1
+                counts["fp"] += 1
             elif expected:
-                false_negative += 1
-    denominator = 2 * true_positive + false_positive + false_negative
-    return 0.0 if denominator == 0 else 2 * true_positive / denominator
+                counts["fn"] += 1
+            else:
+                counts["tn"] += 1
+
+    per_class: dict[str, dict[str, Any]] = {}
+    total_tp = total_fp = total_fn = 0
+    class_f1_scores: list[float] = []
+    for index, label in ID2LABEL.items():
+        counts = per_class_counts[index]
+        true_positive = counts["tp"]
+        false_positive = counts["fp"]
+        false_negative = counts["fn"]
+        precision_denominator = true_positive + false_positive
+        recall_denominator = true_positive + false_negative
+        precision = (
+            true_positive / precision_denominator if precision_denominator else 0.0
+        )
+        recall = true_positive / recall_denominator if recall_denominator else 0.0
+        f1_denominator = 2 * true_positive + false_positive + false_negative
+        f1 = 2 * true_positive / f1_denominator if f1_denominator else 0.0
+        per_class[label.value] = {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "support": recall_denominator,
+            "confusion_matrix": [
+                [counts["tn"], counts["fp"]],
+                [counts["fn"], counts["tp"]],
+            ],
+        }
+        class_f1_scores.append(f1)
+        total_tp += true_positive
+        total_fp += false_positive
+        total_fn += false_negative
+
+    micro_denominator = 2 * total_tp + total_fp + total_fn
+    return {
+        "threshold": threshold,
+        "micro_f1": (
+            0.0 if micro_denominator == 0 else 2 * total_tp / micro_denominator
+        ),
+        "macro_f1": sum(class_f1_scores) / len(class_f1_scores),
+        "per_class": per_class,
+    }
 
 
 def run_training(config: TrainingRunConfig) -> dict[str, Any]:
@@ -155,20 +228,32 @@ def run_training(config: TrainingRunConfig) -> dict[str, Any]:
         eval_dataset=validation_dataset,
         processing_class=tokenizer,
         data_collator=default_data_collator,
-        compute_metrics=compute_micro_f1,
+        compute_metrics=compute_classification_metrics,
     )
     train_result = trainer.train()
-    validation_metrics = trainer.evaluate()
+    prediction_result = trainer.predict(
+        validation_dataset,
+        metric_key_prefix="validation",
+    )
+    validation_report = build_multilabel_report(
+        prediction_result.predictions,
+        prediction_result.label_ids,
+    )
     config.output_dir.mkdir(parents=True, exist_ok=True)
     trainer.save_model(str(config.output_dir))
     tokenizer.save_pretrained(str(config.output_dir))
     metrics = {
         "device": device,
         "train_metrics": _json_ready(getattr(train_result, "metrics", {})),
-        "validation_metrics": _json_ready(validation_metrics),
+        "validation_metrics": _json_ready(prediction_result.metrics),
+        "validation_report": validation_report,
     }
     (config.output_dir / "training_metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (config.output_dir / "validation_report.json").write_text(
+        json.dumps(validation_report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     return metrics

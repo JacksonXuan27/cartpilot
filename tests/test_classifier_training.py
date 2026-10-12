@@ -1,9 +1,13 @@
-import pytest
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from app.classifier_training import (
+    build_multilabel_report,
+    compute_classification_metrics,
     compute_micro_f1,
     run_training,
     TrainingConfigError,
@@ -114,6 +118,53 @@ def test_compute_micro_f1_handles_multilabel_logits_and_tuple_predictions():
     labels[1][1] = 1.0
 
     assert compute_micro_f1(((logits, "auxiliary"), labels)) == pytest.approx(2 / 3)
+    assert compute_classification_metrics(((logits, "auxiliary"), labels)) == {
+        "micro_f1": pytest.approx(2 / 3),
+        "macro_f1": pytest.approx(5 / (3 * NUM_TOPIC_LABELS)),
+    }
+
+
+def test_multilabel_report_includes_per_topic_f1_and_binary_confusion_counts():
+    logits = [[-2.0] * NUM_TOPIC_LABELS for _ in range(2)]
+    labels = [[0.0] * NUM_TOPIC_LABELS for _ in range(2)]
+    logistics_id = LABEL2ID[next(label for label in LABEL2ID if label.value == "物流")]
+    size_id = LABEL2ID[next(label for label in LABEL2ID if label.value == "尺码")]
+    logits[0][logistics_id] = 2.0
+    logits[0][size_id] = 2.0
+    labels[0][logistics_id] = 1.0
+    labels[1][size_id] = 1.0
+
+    report = build_multilabel_report(logits, labels)
+
+    assert report["micro_f1"] == pytest.approx(0.5)
+    assert report["macro_f1"] == pytest.approx(1 / NUM_TOPIC_LABELS)
+    assert report["per_class"]["物流"] == {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "confusion_matrix": [[1, 0], [0, 1]],
+    }
+    assert report["per_class"]["尺码"]["confusion_matrix"] == [
+        [0, 1],
+        [1, 0],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("logits", "labels", "threshold"),
+    [
+        ([[0.0]], [[0.0]], 0.5),
+        ([[0.0] * NUM_TOPIC_LABELS], [], 0.5),
+        ([[0.0] * NUM_TOPIC_LABELS], [[0.0] * (NUM_TOPIC_LABELS - 1)], 0.5),
+        ([[0.0] * NUM_TOPIC_LABELS], [[0.0] * NUM_TOPIC_LABELS], 1.1),
+    ],
+)
+def test_multilabel_report_rejects_inconsistent_dimensions_and_threshold(
+    logits, labels, threshold
+):
+    with pytest.raises(ValueError):
+        build_multilabel_report(logits, labels, threshold=threshold)
 
 
 def test_run_training_configures_multilabel_roberta_and_saves_artifacts(
@@ -153,8 +204,16 @@ def test_run_training_configures_multilabel_roberta_and_saves_artifacts(
         def train(self):
             return SimpleNamespace(metrics={"train_loss": 0.25})
 
-        def evaluate(self):
-            return {"eval_micro_f1": 0.8}
+        def predict(self, dataset, metric_key_prefix):
+            logits = [[-2.0] * NUM_TOPIC_LABELS]
+            labels = [[0.0] * NUM_TOPIC_LABELS]
+            logits[0][0] = 2.0
+            labels[0][0] = 1.0
+            return SimpleNamespace(
+                predictions=logits,
+                label_ids=labels,
+                metrics={"validation_micro_f1": 1.0, "validation_macro_f1": 1.0},
+            )
 
         def save_model(self, output_dir):
             from pathlib import Path
@@ -209,8 +268,17 @@ def test_run_training_configures_multilabel_roberta_and_saves_artifacts(
     assert calls.seeded == config.seed
     assert calls.trainer_arguments["train_dataset"][0]["max_length"] == config.max_length
     assert calls.trainer_arguments["eval_dataset"][0]["examples"] == splits.validation
+    assert calls.trainer_arguments["compute_metrics"] is compute_classification_metrics
     assert result["device"] == "cuda"
-    assert result["validation_metrics"] == {"eval_micro_f1": 0.8}
+    assert result["validation_metrics"] == {
+        "validation_micro_f1": 1.0,
+        "validation_macro_f1": 1.0,
+    }
+    report_path = config.output_dir / "validation_report.json"
+    assert report_path.is_file()
+    assert json.loads(report_path.read_text(encoding="utf-8"))["per_class"]["退换货"][
+        "f1"
+    ] == 1.0
     assert (config.output_dir / "model.bin").is_file()
     assert (config.output_dir / "tokenizer.json").is_file()
     assert (config.output_dir / "training_metrics.json").is_file()
