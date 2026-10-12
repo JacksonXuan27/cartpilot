@@ -39,10 +39,10 @@ uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir 
 
 ```powershell
 uv sync --group ml
-uv run --group ml python -c "from app.classifier_training import TrainingRunConfig, run_training; from pathlib import Path; run_training(TrainingRunConfig(Path('data/ch10/dataset/train.jsonl'), Path('data/ch10/dataset/validation.jsonl'), Path('data/ch10/model'), device='cuda'))"
+uv run --group ml python -m app.classifier_training --device cuda
 ```
 
-显式指定 `device='cuda'` 时，如果 PyTorch 检测不到 CUDA 会直接失败；这一步只验证训练编排和运行环境，不代表已经完成真实训练验收。
+训练 CLI 默认读取 `data/ch10/dataset/train.jsonl` 和 `validation.jsonl`，并写入 `data/ch10/model`；可用 `--train`、`--validation`、`--output-dir`、`--model`、`--epochs`、`--batch-size`、`--learning-rate`、`--max-length`、`--seed` 覆盖。显式指定 `--device cuda` 时，如果 PyTorch 检测不到 CUDA 会直接失败；这一步只提供可执行入口，不代表已经完成真实训练验收。
 
 训练产物就绪后，可将模型导出为 ONNX，并同时复制 Tokenizer 与分类阈值：
 

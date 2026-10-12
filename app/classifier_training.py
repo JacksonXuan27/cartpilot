@@ -1,3 +1,4 @@
+import argparse
 import json
 from dataclasses import dataclass
 from enum import Enum
@@ -279,3 +280,49 @@ def _json_ready(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Train the multi-label customer-support topic classifier"
+    )
+    parser.add_argument("--train", type=Path, default=Path("data/ch10/dataset/train.jsonl"))
+    parser.add_argument(
+        "--validation",
+        type=Path,
+        default=Path("data/ch10/dataset/validation.jsonl"),
+    )
+    parser.add_argument("--output-dir", type=Path, default=Path("data/ch10/model"))
+    parser.add_argument("--model", default="hfl/chinese-roberta-wwm-ext")
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--max-length", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--device",
+        choices=[preference.value for preference in TrainingDevicePreference],
+        default=TrainingDevicePreference.AUTO.value,
+    )
+    arguments = parser.parse_args(argv)
+    try:
+        config = TrainingRunConfig(
+            train_path=arguments.train,
+            validation_path=arguments.validation,
+            output_dir=arguments.output_dir,
+            model_name_or_path=arguments.model,
+            epochs=arguments.epochs,
+            batch_size=arguments.batch_size,
+            learning_rate=arguments.learning_rate,
+            max_length=arguments.max_length,
+            seed=arguments.seed,
+            device=arguments.device,
+        )
+    except TrainingConfigError as exc:
+        parser.error(str(exc))
+    metrics = run_training(config)
+    print(json.dumps(metrics, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

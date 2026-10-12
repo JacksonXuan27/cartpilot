@@ -1,5 +1,6 @@
 import json
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
@@ -13,6 +14,7 @@ from app.classifier_training import (
     TrainingConfigError,
     TrainingDevicePreference,
     TrainingRunConfig,
+    main,
     select_training_device,
 )
 from app.topic_taxonomy import LABEL2ID, NUM_TOPIC_LABELS
@@ -105,6 +107,74 @@ def test_explicit_cuda_selection_fails_when_no_compatible_device_is_available():
 def test_device_selection_rejects_unknown_preferences():
     with pytest.raises(TrainingConfigError, match="unsupported device preference"):
         select_training_device("tpu", True)
+
+
+def test_training_cli_maps_arguments_to_config_and_prints_summary(tmp_path, monkeypatch, capsys):
+    captured = {}
+
+    def fake_run_training(config):
+        captured["config"] = config
+        return {"device": "cuda", "validation_metrics": {"validation_micro_f1": 0.9}}
+
+    monkeypatch.setattr("app.classifier_training.run_training", fake_run_training)
+    main(
+        [
+            "--train",
+            str(tmp_path / "train.jsonl"),
+            "--validation",
+            str(tmp_path / "validation.jsonl"),
+            "--output-dir",
+            str(tmp_path / "model"),
+            "--model",
+            "local/roberta",
+            "--epochs",
+            "5",
+            "--batch-size",
+            "8",
+            "--learning-rate",
+            "0.00001",
+            "--max-length",
+            "256",
+            "--seed",
+            "7",
+            "--device",
+            "cuda",
+        ]
+    )
+
+    config = captured["config"]
+    assert config.train_path == tmp_path / "train.jsonl"
+    assert config.validation_path == tmp_path / "validation.jsonl"
+    assert config.output_dir == tmp_path / "model"
+    assert config.model_name_or_path == "local/roberta"
+    assert config.epochs == 5
+    assert config.batch_size == 8
+    assert config.learning_rate == pytest.approx(1e-5)
+    assert config.max_length == 256
+    assert config.seed == 7
+    assert config.device is TrainingDevicePreference.CUDA
+    assert json.loads(capsys.readouterr().out)["device"] == "cuda"
+
+
+def test_training_cli_uses_project_defaults(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run_training(config):
+        captured["config"] = config
+        return {}
+
+    monkeypatch.setattr(
+        "app.classifier_training.run_training",
+        fake_run_training,
+    )
+
+    main([])
+
+    assert captured["config"].train_path == Path("data/ch10/dataset/train.jsonl")
+    assert captured["config"].validation_path == Path("data/ch10/dataset/validation.jsonl")
+    assert captured["config"].output_dir == Path("data/ch10/model")
+    assert captured["config"].device is TrainingDevicePreference.AUTO
 
 
 def test_compute_micro_f1_handles_multilabel_logits_and_tuple_predictions():
