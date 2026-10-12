@@ -279,6 +279,9 @@ def test_run_training_configures_multilabel_roberta_and_saves_artifacts(
     assert json.loads(report_path.read_text(encoding="utf-8"))["per_class"]["退换货"][
         "f1"
     ] == 1.0
+    assert json.loads(
+        (config.output_dir / "threshold.json").read_text(encoding="utf-8")
+    ) == {"threshold": 0.5}
     assert (config.output_dir / "model.bin").is_file()
     assert (config.output_dir / "tokenizer.json").is_file()
     assert (config.output_dir / "training_metrics.json").is_file()

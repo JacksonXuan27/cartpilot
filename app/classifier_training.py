@@ -256,6 +256,10 @@ def run_training(config: TrainingRunConfig) -> dict[str, Any]:
         json.dumps(validation_report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    (config.output_dir / "threshold.json").write_text(
+        json.dumps({"threshold": 0.5}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return metrics
 
 

@@ -44,6 +44,14 @@ uv run --group ml python -c "from app.classifier_training import TrainingRunConf
 
 显式指定 `device='cuda'` 时，如果 PyTorch 检测不到 CUDA 会直接失败；这一步只验证训练编排和运行环境，不代表已经完成真实训练验收。
 
+训练产物就绪后，可将模型导出为 ONNX，并同时复制 Tokenizer 与分类阈值：
+
+```powershell
+uv run --group ml python -m app.classifier_export --model-dir data/ch10/model --output-dir data/ch10/onnx
+```
+
+导出会生成 `model.onnx` 和 `export_manifest.json`；当前导出入口尚未完成 ONNX Runtime 与 PyTorch 的测试集一致性验收。
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。
