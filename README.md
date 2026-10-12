@@ -52,6 +52,12 @@ uv run --group ml python -m app.classifier_export --model-dir data/ch10/model --
 
 导出会生成 `model.onnx` 和 `export_manifest.json`；当前导出入口尚未完成 ONNX Runtime 与 PyTorch 的测试集一致性验收。
 
+导出完成后，可用独立测试集对比 PyTorch 与 ONNX Runtime 的 logits 和阈值预测；验收结果写入 `data/ch10/onnx/export_validation.json`，若存在差异，报告会标记失败且命令返回非零：
+
+```powershell
+uv run --group ml python -m app.classifier_export_validation --model-dir data/ch10/model --onnx-dir data/ch10/onnx --test data/ch10/dataset/test.jsonl
+```
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。
