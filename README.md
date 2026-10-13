@@ -58,6 +58,8 @@ uv run --group ml python -m app.classifier_export --model-dir data/ch10/model --
 uv run --group ml python -m app.classifier_export_validation --model-dir data/ch10/model --onnx-dir data/ch10/onnx --test data/ch10/dataset/test.jsonl
 ```
 
+导出产物也可以通过 `app.classifier_inference.OnnxTopicClassifier` 独立加载。该组件按 ONNX 模型实际输入名完成批量分词和推理，读取导出目录中的阈值元数据，并在多标签结果为空时回退到最高概率主题；它目前作为旁路推理组件存在，尚未接入实时对话主链路，也不代表已经完成真实模型或 GPU 验收。
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。
