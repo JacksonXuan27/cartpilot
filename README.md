@@ -60,6 +60,14 @@ uv run --group ml python -m app.classifier_export_validation --model-dir data/ch
 
 导出产物也可以通过 `app.classifier_inference.OnnxTopicClassifier` 独立加载。该组件按 ONNX 模型实际输入名完成批量分词和推理，读取导出目录中的阈值元数据，并在多标签结果为空时回退到最高概率主题；它目前作为旁路推理组件存在，尚未接入实时对话主链路，也不代表已经完成真实模型或 GPU 验收。
 
+模型和 ONNX 运行时产物就绪后，可使用独立冒烟命令记录实际执行 Provider、延迟分位数和吞吐量。`--require-provider` 会在目标 Provider 不可用或运行时回退时直接失败，避免把 CPU 回退误记为 GPU 结果：
+
+```powershell
+uv run --group ml python -m app.classifier_benchmark --onnx-dir data/ch10/onnx --providers CUDAExecutionProvider CPUExecutionProvider --require-provider CUDAExecutionProvider --batch-size 8 --iterations 20 --output data/ch10/onnx/inference_benchmark.json
+```
+
+当前仓库未附带真实训练数据、模型权重或 ONNX 产物，因此尚未执行真实 GPU 推理和性能验收。
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。

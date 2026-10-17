@@ -173,6 +173,13 @@ class OnnxTopicClassifier:
     def classify(self, text: str) -> ClassificationResult:
         return self.predict((text,))[0]
 
+    @property
+    def execution_providers(self) -> tuple[str, ...]:
+        getter = getattr(self._session, "get_providers", None)
+        if getter is None:
+            return self.config.providers
+        return tuple(getter())
+
 
 def _load_threshold(path: Path) -> float:
     try:
