@@ -68,6 +68,22 @@ uv run --group ml python -m app.classifier_benchmark --onnx-dir data/ch10/onnx -
 
 当前仓库未附带真实训练数据、模型权重或 ONNX 产物，因此尚未执行真实 GPU 推理和性能验收。
 
+### 分类器全链路验收
+
+准备好真实数据、训练模型和 ONNX 产物后，可运行验收汇总命令：
+
+```powershell
+uv run python -m app.classifier_acceptance --root . --require-cuda
+```
+
+验收脚本会检查实现入口、`train/validation/test` 数据集、训练产物、ONNX 导出物、PyTorch/ONNX 一致性报告、推理性能报告和全量测试，并写入 `data/ch10/acceptance_report.json`。默认情况下，缺少外部产物会返回 `pending_external_validation`；需要把未完成的外部验收视为失败时，再追加 `--strict`：
+
+```powershell
+uv run python -m app.classifier_acceptance --root . --require-cuda --strict
+```
+
+只有性能报告中的 `active_providers` 实际包含 `CUDAExecutionProvider`，GPU 验收才会通过。验收脚本不会读取或提交数据集、模型权重、缓存、密钥和运行报告；这些内容继续被 `.gitignore` 排除。
+
 ## 本地启动
 
 项目使用 Python 3.12+、`uv` 和 FastAPI。
@@ -121,7 +137,7 @@ docker compose up --build
 uv run pytest
 ```
 
-测试覆盖配置校验、会话隔离、Prompt 版本、模型供应商、普通对话、SSE 流式输出、售后结构化提取、数据层、向量检索和 RAG HTTP 冒烟流程。
+测试覆盖配置校验、会话隔离、Prompt 版本、模型供应商、普通对话、SSE 流式输出、售后结构化提取、数据层、向量检索、RAG HTTP 冒烟流程，以及主题分类数据处理、训练/导出入口、ONNX 推理、性能记录和外部验收状态。
 
 ## 代码结构
 
@@ -141,6 +157,10 @@ uv run pytest
 | `app/vector_store.py` | 内存向量库和 Milvus 适配器 |
 | `app/knowledge_base.py` | 知识库检索与问答服务 |
 | `app/observability.py` | Trace、模型指标和可选 HTTP 导出 |
+| `app/classifier_data.py` / `app/classifier_dataset.py` | 主题分类数据清洗、切分和多热标签适配 |
+| `app/classifier_training.py` / `app/classifier_export.py` | 分类模型训练和 ONNX 导出入口 |
+| `app/classifier_inference.py` / `app/classifier_benchmark.py` | ONNX 旁路推理、Provider 检查和性能记录 |
+| `app/classifier_acceptance.py` | 分类器外部产物、推理报告和全量测试验收汇总 |
 | `tests/` | 单元测试、接口测试和集成测试 |
 
 ## 开发约定
