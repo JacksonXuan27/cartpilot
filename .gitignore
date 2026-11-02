@@ -10,6 +10,7 @@ __pycache__/
 data/*.db*
 data/*.sqlite*
 data/*.log
+data/ch10/
 volumes/
 logs/
 *.pid

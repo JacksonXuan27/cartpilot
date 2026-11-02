@@ -11,7 +11,8 @@ from app.contracts import ChatMessage, TokenUsage
 from app.context_layers import ContextLayerManager
 from app.context_reference_resolution import ContextReferenceResolutionNode
 from app.intent_routing import IntentRouterNode
-from app.providers import ChatModelProvider, StubModelProvider
+from app.config import get_settings
+from app.providers import ChatModelProvider, create_chat_model_provider
 from app.react_loop import ReactLoopNode
 from app.refund_interruption import RefundInterruptionNode
 from app.tool_registry import ToolRegistry
@@ -406,13 +407,17 @@ def workflow_response(state: WorkflowState) -> WorkflowRunResponse:
     )
 
 
-def default_workflow_runtime() -> WorkflowRuntime:
+def default_workflow_runtime(
+    model_provider: ChatModelProvider | None = None,
+) -> WorkflowRuntime:
     checkpoint_store = SQLiteWorkflowCheckpointStore(
         DatabaseManager("sqlite:///./data/cartpilot.db")
     )
     exporter = observability_exporter_from_env()
     return WorkflowRuntime(
-        StubModelProvider(),
+        model_provider
+        if model_provider is not None
+        else create_chat_model_provider(get_settings()),
         ToolRegistry(),
         checkpoint_store=checkpoint_store,
         trace_recorder=exporter,

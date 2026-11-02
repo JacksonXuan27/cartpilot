@@ -170,6 +170,8 @@ def _coerce_messages(raw_messages: object) -> list[ChatMessage]:
 
 def _coerce_model_message(result: ModelResult) -> ChatMessage:
     try:
+        if isinstance(result.message, ChatMessage):
+            return result.message.model_copy(deep=True)
         return ChatMessage.model_validate(result.message).model_copy(deep=True)
     except (ValidationError, TypeError) as exc:
         raise ReactLoopError("model returned an invalid assistant message") from exc

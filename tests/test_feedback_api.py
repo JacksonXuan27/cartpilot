@@ -14,7 +14,7 @@ def feedback_repository(tmp_path, monkeypatch):
     database.open()
     initialize_schema(database)
     repository = UserFeedbackRepository(database)
-    monkeypatch.setattr(app.state, "feedback_repository", repository)
+    monkeypatch.setattr(app.state, "feedback_repository", repository, raising=False)
     yield repository
     database.close()
 

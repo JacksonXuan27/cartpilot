@@ -18,6 +18,16 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
+# Ch10 训练/导出重依赖：主应用运行时不需要，按需使用 uv run --group ml
+ml = [
+    "torch>=2.6",
+    "transformers>=4.46",
+    "accelerate>=1.0",
+    "scikit-learn>=1.5",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "tokenizers>=0.20",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

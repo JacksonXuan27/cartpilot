@@ -23,7 +23,66 @@ CartPilot 是一个面向电商客服场景的 AI Agent 服务，逐步提供多
 - 可选的后台 HTTP 观测导出，默认只发送观测元数据，不发送对话正文；
 - 用户对回答的有用/无用反馈通过 SQLite 持久化，并关联请求与 Trace 标识。
 
-后续章节将继续实现 Function Calling 工具链、RAG 检索、Workflow + Agent、上下文管理、MCP 工具系统、可观测性和分类器推理。
+主题分类器采用独立的 17 类多标签主题体系（退换货、物流、尺码、发票、质量问题、运费、优惠活动、价保、支付、订单修改、库存补货、商品信息、保修维修、账号、会员积分、评价和其他），不替代 Workflow 的九类实时意图识别。训练样本使用 UTF-8 JSONL，每行包含版本、样本 ID、文本、一个或多个主题标签、来源及可选数据集拆分。数据准备会脱敏手机号、长数字单号和常见社交账号，规范空白、去重，并按标签组合可复现地划分训练、验证和测试集；当前未随仓库提供真实训练数据，亦未训练分类模型。可用以下命令处理自备样本：
+
+```powershell
+uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir data/ch10/prepared --seed 42
+```
+
+输出目录包含三个切分后的 JSONL 文件和 `manifest.json`；清单记录输入文件 SHA-256、随机种子、各切分样本量及标签分布，不保存样本文本。
+
+训练配置入口 `app.classifier_training` 定义了 RoBERTa 模型标识、优化超参数和 `auto`/`cpu`/`cuda` 设备偏好，并提供惰性加载的 Transformers Trainer 训练入口。训练会校验设备、固定随机种子、按 17 类多标签任务加载模型，并在验证集记录 micro-F1、macro-F1、逐类 precision/recall/F1 与 one-vs-rest 混淆矩阵；最终模型、Tokenizer、训练指标和 `validation_report.json` 写入输出目录。当前尚未使用真实数据执行训练，也未验证本机 GPU。
+
+训练数据适配入口 `app.classifier_dataset` 会校验 train/validation 文件的拆分标记和文本隔离，将 17 类标签编码成多热浮点向量，并将文本交给注入的 tokenizer。该层不依赖 PyTorch/Transformers；训练依赖通过可选的 `ml` 依赖组安装，避免影响普通 API 运行时。
+
+准备好自己的 `train.jsonl` 和 `validation.jsonl` 后，可按需安装训练依赖并调用训练入口：
+
+```powershell
+uv sync --group ml
+uv run --group ml python -m app.classifier_training --device cuda
+```
+
+训练 CLI 默认读取 `data/ch10/dataset/train.jsonl` 和 `validation.jsonl`，并写入 `data/ch10/model`；可用 `--train`、`--validation`、`--output-dir`、`--model`、`--epochs`、`--batch-size`、`--learning-rate`、`--max-length`、`--seed` 覆盖。显式指定 `--device cuda` 时，如果 PyTorch 检测不到 CUDA 会直接失败；这一步只提供可执行入口，不代表已经完成真实训练验收。
+
+训练产物就绪后，可将模型导出为 ONNX，并同时复制 Tokenizer 与分类阈值：
+
+```powershell
+uv run --group ml python -m app.classifier_export --model-dir data/ch10/model --output-dir data/ch10/onnx
+```
+
+导出会生成 `model.onnx` 和 `export_manifest.json`；导出不会自动运行测试集一致性验收，需显式执行下面的命令。
+
+导出完成后，可用独立测试集对比 PyTorch 与 ONNX Runtime 的 logits 和阈值预测；验收结果写入 `data/ch10/onnx/export_validation.json`，若存在差异，报告会标记失败且命令返回非零：
+
+```powershell
+uv run --group ml python -m app.classifier_export_validation --model-dir data/ch10/model --onnx-dir data/ch10/onnx --test data/ch10/dataset/test.jsonl
+```
+
+导出产物也可以通过 `app.classifier_inference.OnnxTopicClassifier` 独立加载。该组件按 ONNX 模型实际输入名完成批量分词和推理，读取导出目录中的阈值元数据，并在多标签结果为空时回退到最高概率主题；它目前作为旁路推理组件存在，尚未接入实时对话主链路，也不代表已经完成真实模型或 GPU 验收。
+
+模型和 ONNX 运行时产物就绪后，可使用独立冒烟命令记录实际执行 Provider、延迟分位数和吞吐量。`--require-provider` 会在目标 Provider 不可用或运行时回退时直接失败，避免把 CPU 回退误记为 GPU 结果：
+
+```powershell
+uv run --group ml python -m app.classifier_benchmark --onnx-dir data/ch10/onnx --providers CUDAExecutionProvider CPUExecutionProvider --require-provider CUDAExecutionProvider --batch-size 8 --iterations 20 --output data/ch10/onnx/inference_benchmark.json
+```
+
+当前仓库未附带真实训练数据、模型权重或 ONNX 产物，因此尚未执行真实 GPU 推理和性能验收。
+
+### 分类器全链路验收
+
+准备好真实数据、训练模型和 ONNX 产物后，可运行验收汇总命令：
+
+```powershell
+uv run python -m app.classifier_acceptance --root . --require-cuda
+```
+
+验收脚本会检查实现入口、`train/validation/test` 数据集、训练产物、ONNX 导出物、PyTorch/ONNX 一致性报告、推理性能报告和全量测试，并写入 `data/ch10/acceptance_report.json`。默认情况下，缺少外部产物会返回 `pending_external_validation`；需要把未完成的外部验收视为失败时，再追加 `--strict`：
+
+```powershell
+uv run python -m app.classifier_acceptance --root . --require-cuda --strict
+```
+
+只有性能报告中的 `active_providers` 实际包含 `CUDAExecutionProvider`，GPU 验收才会通过。验收脚本不会读取或提交数据集、模型权重、缓存、密钥和运行报告；这些内容继续被 `.gitignore` 排除。
 
 ## 本地启动
 
@@ -55,7 +114,7 @@ uv run uvicorn app.main:app --reload
 
 审核反馈可通过 POST /feedback/{feedback_id}/review 写回审核状态、备注和审核人；GET /feedback/export 按 JSONL 导出反馈及审核元数据，可使用 rating、review_status 和 limit 筛选。导出不包含对话正文。
 
-当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。
+默认使用本地确定性模型替身。配置 `.env` 中的 `CHAT_PROVIDER=openai-compatible`、`CHAT_BASE_URL`、`CHAT_MODEL` 和 `CHAT_API_KEY` 后，普通对话、知识问答及售后信息提取会调用配置的 OpenAI API 规范兼容接口；不支持非标准扩展响应字段。真实模型可在 Workflow ReAct 循环中请求已注册的工具，并将调用结果回传模型；默认运行时尚未装配业务工具，实际可调用范围由运行时注册表决定。密钥不提交到 Git。
 
 如需接入自建观测服务或 Langfuse 兼容网关，可在 `.env` 中配置 `OBSERVABILITY_EXPORT_URL`，并按需设置 `OBSERVABILITY_API_KEY`。导出在后台队列中执行，观测服务不可用时不会阻塞对话和 Workflow 主链路；未配置端点时继续使用内存记录器。
 
@@ -78,7 +137,7 @@ docker compose up --build
 uv run pytest
 ```
 
-测试覆盖配置校验、会话隔离、Prompt 版本、模型供应商、普通对话、SSE 流式输出、售后结构化提取、数据层、向量检索和 RAG HTTP 冒烟流程。
+测试覆盖配置校验、会话隔离、Prompt 版本、模型供应商、普通对话、SSE 流式输出、售后结构化提取、数据层、向量检索、RAG HTTP 冒烟流程，以及主题分类数据处理、训练/导出入口、ONNX 推理、性能记录和外部验收状态。
 
 ## 代码结构
 
@@ -98,6 +157,10 @@ uv run pytest
 | `app/vector_store.py` | 内存向量库和 Milvus 适配器 |
 | `app/knowledge_base.py` | 知识库检索与问答服务 |
 | `app/observability.py` | Trace、模型指标和可选 HTTP 导出 |
+| `app/classifier_data.py` / `app/classifier_dataset.py` | 主题分类数据清洗、切分和多热标签适配 |
+| `app/classifier_training.py` / `app/classifier_export.py` | 分类模型训练和 ONNX 导出入口 |
+| `app/classifier_inference.py` / `app/classifier_benchmark.py` | ONNX 旁路推理、Provider 检查和性能记录 |
+| `app/classifier_acceptance.py` | 分类器外部产物、推理报告和全量测试验收汇总 |
 | `tests/` | 单元测试、接口测试和集成测试 |
 
 ## 开发约定
