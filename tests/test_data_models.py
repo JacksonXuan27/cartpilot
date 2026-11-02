@@ -9,10 +9,25 @@ from app.data_models import (
     OrderRecord,
     RetrievalHit,
     RetrievalRecord,
+    UserFeedback,
 )
 
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+
+
+def test_user_feedback_validates_rating_and_optional_trace_metadata():
+    feedback = UserFeedback(
+        feedback_id=uuid4(),
+        request_id="request-1",
+        trace_id="trace-1",
+        rating="unhelpful",
+        reason="答案缺少依据",
+        created_at=NOW,
+    )
+
+    assert feedback.rating == "unhelpful"
+    assert feedback.trace_id == "trace-1"
 
 
 def test_order_record_validates_persisted_order_fields():

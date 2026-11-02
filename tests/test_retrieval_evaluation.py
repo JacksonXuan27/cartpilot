@@ -9,7 +9,9 @@ from app.retrieval_evaluation import (
     load_evaluation_dataset,
     load_rankings,
     render_markdown_report,
+    record_evaluation_summary,
 )
+from app.observability import HttpObservabilityExporter
 
 
 def test_evaluator_calculates_macro_recall_precision_mrr_and_ndcg():
@@ -114,6 +116,44 @@ def test_report_renders_metrics_scope_and_per_query_rows():
     assert "仅代表本次输入的离线排名" in markdown
     assert "| q1 | 退款政策 | 1.0000 / 1.0000 |" in markdown
     assert "| --- | --- | --- |" in markdown
+
+
+def test_evaluation_report_metrics_are_exported_as_observability_span():
+    class RecordingTransport:
+        def __init__(self):
+            self.events = []
+
+        def send(self, payload):
+            self.events.append(payload)
+
+    transport = RecordingTransport()
+    exporter = HttpObservabilityExporter(transport)
+    report = evaluate_retrieval(
+        [EvaluationCase("q1", "退款政策", ("refund-1", "refund-2"))],
+        {"q1": ("refund-1", "other")},
+        cutoffs=(1, 2),
+    )
+
+    try:
+        record_evaluation_summary(
+            report,
+            exporter,
+            "retrieval_qrels.jsonl",
+            "retrieval_rankings.jsonl",
+        )
+        exporter.flush()
+    finally:
+        exporter.close()
+
+    assert len(transport.events) == 1
+    event = transport.events[0]
+    assert event["event_type"] == "trace.span"
+    assert event["name"] == "retrieval.evaluation"
+    assert event["status"] == "completed"
+    assert event["attributes"]["evaluation.query_count"] == 1
+    assert event["attributes"]["evaluation.recall@2"] == pytest.approx(0.5)
+    assert event["attributes"]["evaluation.mrr@2"] == pytest.approx(1.0)
+    assert "退款政策" not in json.dumps(event, ensure_ascii=False)
 
 
 def test_repository_evaluation_dataset_is_loadable():

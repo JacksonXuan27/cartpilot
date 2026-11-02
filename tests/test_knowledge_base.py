@@ -51,13 +51,18 @@ async def test_knowledge_service_retrieves_context_and_generates_answer():
 
 
 @pytest.mark.asyncio
-async def test_knowledge_service_returns_empty_sources_without_documents():
+async def test_knowledge_service_rejects_empty_retrieval_without_calling_model():
     service = make_service(reply="暂未找到相关知识。")
 
     response = await service.query(KnowledgeQueryRequest(query="未知问题"))
 
-    assert response.answer == "暂未找到相关知识。"
+    assert response.answer == "暂时无法根据知识库确认答案，请补充更多信息。"
     assert response.sources == []
+    assert response.confidence_accepted is False
+    assert response.confidence_score is None
+    assert response.confidence_reason == "no_matches"
+    assert response.low_quality is True
+    assert service.model_provider.calls == []
 
 
 @pytest.mark.asyncio
@@ -82,7 +87,37 @@ async def test_knowledge_service_refuses_low_confidence_context():
 
     assert response.answer == "暂时无法根据知识库确认答案，请补充更多信息。"
     assert response.sources == []
+    assert response.confidence_accepted is False
+    assert response.confidence_score is not None
+    assert response.confidence_reason == "score_below_threshold"
+    assert response.low_quality is True
     assert service.model_provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_service_marks_answerable_retrieval_as_accepted_quality():
+    service = make_service()
+    vector = await service.embedding_provider.embed("退款多久到账")
+    await service.vector_store.upsert(
+        [
+            VectorRecord(
+                record_id="accepted-refund",
+                document_id=DOCUMENT_ID,
+                chunk_index=0,
+                content="原路退款通常在三个工作日内到账。",
+                vector=vector,
+                metadata={},
+            )
+        ]
+    )
+
+    response = await service.query(KnowledgeQueryRequest(query="退款多久到账"))
+
+    assert response.confidence_accepted is True
+    assert response.confidence_score is not None
+    assert response.confidence_reason == "accepted"
+    assert response.low_quality is False
+    assert len(response.sources) == 1
 
 
 def test_knowledge_query_endpoint_uses_application_service():
@@ -95,9 +130,13 @@ def test_knowledge_query_endpoint_uses_application_service():
 
     assert response.status_code == 200
     body = response.json()
-    assert body["answer"] == "请参考退款政策。"
+    assert body["answer"] == "暂时无法根据知识库确认答案，请补充更多信息。"
     assert body["request_id"]
     assert body["sources"] == []
+    assert body["confidence_accepted"] is False
+    assert body["confidence_score"] is None
+    assert body["confidence_reason"] == "no_matches"
+    assert body["low_quality"] is True
 
 
 def test_knowledge_query_validates_query_and_top_k():

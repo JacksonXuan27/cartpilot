@@ -8,6 +8,7 @@ from app.data_models import (
     OrderRecord,
     RetrievalHit,
     RetrievalRecord,
+    UserFeedback,
 )
 from app.database import DatabaseManager, DatabaseNotInitializedError
 from app.repositories import (
@@ -15,6 +16,7 @@ from app.repositories import (
     OrderRepository,
     RecordNotFoundError,
     RetrievalRecordRepository,
+    UserFeedbackRepository,
     initialize_schema,
 )
 
@@ -92,6 +94,48 @@ async def test_retrieval_repository_round_trips_ranked_hits(database):
 
 
 @pytest.mark.asyncio
+async def test_user_feedback_repository_persists_and_filters_feedback(database):
+    repository = UserFeedbackRepository(database)
+    positive = UserFeedback(
+        feedback_id=uuid4(),
+        request_id="request-1",
+        trace_id="trace-1",
+        rating="helpful",
+        created_at=NOW,
+    )
+    negative = UserFeedback(
+        feedback_id=uuid4(),
+        request_id="request-2",
+        trace_id="trace-2",
+        rating="unhelpful",
+        reason="检索结果不相关",
+        created_at=NOW,
+    )
+
+    await repository.save(positive)
+    await repository.save(negative)
+
+    assert await repository.get(positive.feedback_id) == positive
+    assert {item.feedback_id for item in await repository.list_recent()} == {
+        positive.feedback_id, negative.feedback_id
+    }
+    assert await repository.list_recent(request_id="request-2") == [negative]
+
+    reviewed = negative.model_copy(
+        update={
+            "review_status": "needs_revision",
+            "review_note": "补充检索依据",
+            "reviewed_by": "reviewer-1",
+            "reviewed_at": NOW,
+        }
+    )
+    await repository.update_review(reviewed)
+
+    assert await repository.get(negative.feedback_id) == reviewed
+    assert await repository.list_recent(review_status="needs_revision") == [reviewed]
+
+
+@pytest.mark.asyncio
 async def test_repositories_report_missing_records(database):
     with pytest.raises(RecordNotFoundError, match="ORD-404"):
         await OrderRepository(database).get("ORD-404")
@@ -99,6 +143,35 @@ async def test_repositories_report_missing_records(database):
         await KnowledgeDocumentRepository(database).get(uuid4())
     with pytest.raises(RecordNotFoundError, match="retrieval record"):
         await RetrievalRecordRepository(database).get(uuid4())
+    with pytest.raises(RecordNotFoundError, match="feedback"):
+        await UserFeedbackRepository(database).get(uuid4())
+
+
+def test_feedback_schema_migrates_existing_table(tmp_path):
+    database = DatabaseManager(f"sqlite:///{tmp_path / 'legacy-feedback.db'}")
+    database.open()
+    with database.transaction() as connection:
+        connection.execute(
+            """
+            CREATE TABLE user_feedback (
+                feedback_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                trace_id TEXT,
+                rating TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            )
+            """
+        )
+
+    initialize_schema(database)
+
+    columns = {
+        row["name"]
+        for row in database.connection.execute("PRAGMA table_info(user_feedback)")
+    }
+    assert "review_status" in columns
+    database.close()
 
 
 @pytest.mark.asyncio

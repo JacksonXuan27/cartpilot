@@ -1,10 +1,16 @@
 import json
+from datetime import datetime, timezone
+from typing import Literal
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
+from app.data_models import UserFeedback
+from app.database import DatabaseManager
 from app.embeddings import HashEmbeddingProvider
 from app.contracts import (
     AfterSalesExtractionRequest,
@@ -20,6 +26,7 @@ from app.knowledge_base import (
 )
 from app.providers import ModelProviderError, StubModelProvider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
+from app.repositories import RecordNotFoundError, UserFeedbackRepository, initialize_schema
 from app.vector_store import InMemoryVectorStore
 from app.workflow_runtime import (
     WorkflowRunRequest,
@@ -35,7 +42,43 @@ from app.workflow_checkpoints import (
 )
 
 
+class FeedbackSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    rating: Literal["helpful", "unhelpful"]
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class FeedbackSubmissionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feedback_id: str
+    status: str = "saved"
+
+
+class FeedbackReviewSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_status: Literal["accepted", "needs_revision", "dismissed"]
+    review_note: str | None = Field(default=None, max_length=1000)
+    reviewed_by: str = Field(min_length=1, max_length=128)
+
+
+class FeedbackReviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feedback_id: str
+    review_status: str
+    reviewed_at: datetime
+
+
 app = FastAPI(title="CartPilot")
+feedback_database = DatabaseManager("sqlite:///./data/cartpilot.db")
+feedback_database.open()
+initialize_schema(feedback_database)
+app.state.feedback_repository = UserFeedbackRepository(feedback_database)
 default_provider = StubModelProvider()
 app.state.chat_service = ChatService(
     session_store=InMemorySessionStore(),
@@ -49,6 +92,78 @@ app.state.knowledge_base_service = KnowledgeBaseService(
     model_provider=default_provider,
 )
 app.state.workflow_runtime = default_workflow_runtime()
+
+
+@app.post("/feedback", response_model=FeedbackSubmissionResponse, status_code=201)
+async def submit_feedback(
+    submission: FeedbackSubmission, http_request: Request
+) -> FeedbackSubmissionResponse:
+    feedback = UserFeedback(
+        feedback_id=uuid4(),
+        request_id=submission.request_id,
+        trace_id=submission.trace_id,
+        rating=submission.rating,
+        reason=submission.reason,
+        created_at=datetime.now(timezone.utc),
+    )
+    repository: UserFeedbackRepository = http_request.app.state.feedback_repository
+    await repository.save(feedback)
+    return FeedbackSubmissionResponse(feedback_id=str(feedback.feedback_id))
+
+
+@app.get("/feedback/export")
+async def export_feedback(
+    http_request: Request,
+    rating: Literal["helpful", "unhelpful"] | None = None,
+    review_status: Literal["pending", "accepted", "needs_revision", "dismissed"] | None = None,
+    limit: int = Query(default=500, ge=1, le=1000),
+) -> StreamingResponse:
+    repository: UserFeedbackRepository = http_request.app.state.feedback_repository
+    records = await repository.list_recent(
+        limit=limit,
+        rating=rating,
+        review_status=review_status,
+    )
+    lines = "".join(
+        json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n"
+        for record in records
+    )
+    return StreamingResponse(
+        iter([lines]),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="feedback.jsonl"'},
+    )
+
+
+@app.post(
+    "/feedback/{feedback_id}/review",
+    response_model=FeedbackReviewResponse,
+)
+async def review_feedback(
+    feedback_id: str,
+    submission: FeedbackReviewSubmission,
+    http_request: Request,
+) -> FeedbackReviewResponse | JSONResponse:
+    repository: UserFeedbackRepository = http_request.app.state.feedback_repository
+    try:
+        existing = await repository.get(UUID(feedback_id))
+    except (ValueError, RecordNotFoundError):
+        return JSONResponse(status_code=404, content={"detail": "feedback not found"})
+    reviewed_at = datetime.now(timezone.utc)
+    updated = existing.model_copy(
+        update={
+            "review_status": submission.review_status,
+            "review_note": submission.review_note,
+            "reviewed_by": submission.reviewed_by,
+            "reviewed_at": reviewed_at,
+        }
+    )
+    await repository.update_review(updated)
+    return FeedbackReviewResponse(
+        feedback_id=str(updated.feedback_id),
+        review_status=updated.review_status,
+        reviewed_at=reviewed_at,
+    )
 
 
 @app.get("/healthz")

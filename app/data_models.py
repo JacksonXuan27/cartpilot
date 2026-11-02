@@ -53,4 +53,21 @@ class RetrievalRecord(BaseModel):
     created_at: datetime
 
 
-DataModelKind = Literal["order", "knowledge_document", "retrieval_record"]
+class UserFeedback(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feedback_id: UUID
+    request_id: str = Field(min_length=1, max_length=128)
+    trace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    rating: Literal["helpful", "unhelpful"]
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+    created_at: datetime
+    review_status: Literal["pending", "accepted", "needs_revision", "dismissed"] = "pending"
+    review_note: str | None = Field(default=None, max_length=1000)
+    reviewed_by: str | None = Field(default=None, min_length=1, max_length=128)
+    reviewed_at: datetime | None = None
+
+
+DataModelKind = Literal[
+    "order", "knowledge_document", "retrieval_record", "user_feedback"
+]
