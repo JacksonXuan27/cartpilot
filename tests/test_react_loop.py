@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator, Mapping
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.contracts import ChatMessage
+from app.contracts import ChatMessage, TokenUsage
 from app.providers import ModelResult, ModelProviderError, StubModelProvider, ToolCall
 from app.react_loop import ReactLoopError, ReactLoopNode
 from app.tool_registry import ToolRegistry
@@ -69,6 +69,48 @@ async def test_react_loop_completes_without_tool_calls():
     assert result.data["messages"][-1] == ChatMessage(
         role="assistant", content="直接回答"
     )
+
+
+@pytest.mark.asyncio
+async def test_react_loop_records_cumulative_model_usage():
+    provider = StubModelProvider(
+        reply="工具查询完成",
+        usage=TokenUsage(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+        tool_call_rounds=[(make_tool_call("call-token-1"),)],
+    )
+    state = make_state()
+    context = WorkflowRuntimeContext(request_id="request-token-2", token_budget=12)
+
+    result = await ReactLoopNode(
+        provider,
+        ToolRegistry([EchoTool()]),
+    ).execute(state, context)
+
+    assert result.status is WorkflowStatus.COMPLETED
+    assert result.data["token_usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 4,
+        "total_tokens": 12,
+    }
+    assert result.data["token_budget"] == 12
+
+
+@pytest.mark.asyncio
+async def test_react_loop_stops_when_token_budget_is_exceeded():
+    provider = StubModelProvider(
+        reply="不应返回最终答案",
+        usage=TokenUsage(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+    )
+    state = make_state()
+    context = WorkflowRuntimeContext(request_id="request-token-3", token_budget=5)
+
+    with pytest.raises(ReactLoopError, match="token budget exceeded"):
+        await ReactLoopNode(provider, ToolRegistry()).execute(state, context)
+
+    assert state.status is WorkflowStatus.FAILED
+    assert state.data["error"]["code"] == "token_budget_exceeded"
+    assert state.data["token_usage"]["total_tokens"] == 6
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio

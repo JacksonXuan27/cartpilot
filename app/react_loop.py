@@ -8,7 +8,12 @@ from app.contracts import ChatMessage
 from app.providers import ChatModelProvider, ModelResult
 from app.tool_calling import ToolCallNode, ToolCallNodeError
 from app.tool_registry import ToolRegistry
-from app.workflow import WorkflowRuntimeContext, WorkflowState, WorkflowStatus
+from app.workflow import (
+    WorkflowRuntimeContext,
+    WorkflowState,
+    WorkflowStatus,
+    WorkflowTokenBudgetExceededError,
+)
 
 
 class ReactLoopError(RuntimeError):
@@ -49,6 +54,7 @@ class ReactLoopNode:
         state.data.pop("answer", None)
         state.data["react_iterations"] = 0
         state.data.setdefault("tool_history", [])
+        context.apply_usage(state)
 
         try:
             messages = _coerce_messages(state.data.get("messages"))
@@ -61,11 +67,21 @@ class ReactLoopNode:
                     messages,
                     tools=self.tool_registry.definitions(),
                 )
+                if result.usage is not None:
+                    state.data["last_model_usage"] = result.usage.model_dump(mode="json")
+                try:
+                    context.record_usage(result.usage)
+                except WorkflowTokenBudgetExceededError as exc:
+                    context.apply_usage(state)
+                    raise ReactLoopError(
+                        str(exc),
+                        code=exc.code,
+                        iteration=iteration,
+                    ) from exc
+                context.apply_usage(state)
                 messages.append(_coerce_model_message(result))
                 state.data["messages"] = messages
                 state.data["last_model_finish_reason"] = result.finish_reason
-                if result.usage is not None:
-                    state.data["last_model_usage"] = result.usage.model_dump(mode="json")
 
                 if not result.tool_calls:
                     state.status = WorkflowStatus.COMPLETED

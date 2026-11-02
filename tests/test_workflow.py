@@ -2,12 +2,14 @@ from datetime import timezone
 
 import pytest
 
+from app.contracts import TokenUsage
 from app.workflow import (
     WorkflowError,
     WorkflowNode,
     WorkflowRuntimeContext,
     WorkflowState,
     WorkflowStatus,
+    WorkflowTokenBudgetExceededError,
 )
 
 
@@ -59,6 +61,24 @@ def test_workflow_runtime_context_copies_metadata():
     metadata["source"] = "changed"
 
     assert context.metadata == {"source": "chat"}
+
+
+def test_workflow_runtime_context_accumulates_usage_and_enforces_budget():
+    context = WorkflowRuntimeContext(request_id="request-token-1", token_budget=10)
+
+    context.record_usage(TokenUsage(prompt_tokens=3, completion_tokens=2, total_tokens=5))
+    context.record_usage(TokenUsage(prompt_tokens=2, completion_tokens=3, total_tokens=5))
+
+    assert context.token_usage == TokenUsage(
+        prompt_tokens=5,
+        completion_tokens=5,
+        total_tokens=10,
+    )
+
+    with pytest.raises(WorkflowTokenBudgetExceededError, match="11 > 10"):
+        context.record_usage(TokenUsage(total_tokens=1))
+
+    assert context.token_usage.total_tokens == 11
 
 
 @pytest.mark.asyncio

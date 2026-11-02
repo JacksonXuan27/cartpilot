@@ -71,6 +71,7 @@ class StubModelProvider:
             return ModelResult(
                 message=ChatMessage(role="assistant", content="I will check that for you."),
                 finish_reason="tool_call",
+                usage=self.usage,
                 tool_calls=tool_calls,
             )
         return ModelResult(
