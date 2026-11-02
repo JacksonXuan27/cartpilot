@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any, Protocol
 
@@ -42,11 +42,20 @@ class ToolRegistry:
             self.register(tool)
 
     def register(self, tool: ToolLike) -> None:
-        if not tool.name.strip():
-            raise ValueError("tool name cannot be empty")
-        if tool.name in self._tools:
-            raise ToolAlreadyRegisteredError(tool.name)
-        self._tools[tool.name] = tool
+        self.register_many([tool])
+
+    def register_many(self, tools: Iterable[ToolLike]) -> None:
+        pending = list(tools)
+        names = set(self._tools)
+        additions: dict[str, ToolLike] = {}
+        for tool in pending:
+            if not isinstance(tool.name, str) or not tool.name.strip():
+                raise ValueError("tool name cannot be empty")
+            if tool.name in names:
+                raise ToolAlreadyRegisteredError(tool.name)
+            names.add(tool.name)
+            additions[tool.name] = tool
+        self._tools.update(additions)
 
     def get(self, name: str) -> ToolLike:
         tool = self._tools.get(name)

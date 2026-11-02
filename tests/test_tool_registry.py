@@ -108,3 +108,14 @@ def test_registry_definitions_are_safe_to_mutate():
 
     fresh = registry.definitions()
     assert fresh[-1].input_schema["properties"]["order_id"]["type"] == "string"
+
+
+def test_registry_register_many_is_atomic_for_duplicate_tools():
+    first = OrderQueryTool(InMemoryOrderRepository())
+    duplicate = OrderQueryTool(InMemoryOrderRepository())
+    registry = ToolRegistry()
+
+    with pytest.raises(ToolAlreadyRegisteredError):
+        registry.register_many([first, duplicate])
+
+    assert registry.definitions() == []
