@@ -4,6 +4,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts import ChatMessage, TokenUsage
+from app.context_layers import ContextLayerManager
 from app.intent_routing import IntentRouterNode
 from app.providers import ModelResult, StubModelProvider, ToolCall
 from app.react_loop import ReactLoopNode
@@ -69,6 +70,72 @@ async def test_runtime_exposes_token_usage_and_budget():
 
 
 @pytest.mark.anyio
+async def test_runtime_uses_context_layers_for_model_prompt_and_preserves_history():
+    provider = StubModelProvider(reply="acknowledged")
+    context_layers = ContextLayerManager(short_term_limit=2, long_term_limit=1)
+    runtime = WorkflowRuntime(
+        provider,
+        ToolRegistry(),
+        nodes=(ReactLoopNode(provider, ToolRegistry()),),
+        context_layer_manager=context_layers,
+    )
+
+    messages = [
+        ChatMessage(role="system", content="system-rule"),
+        ChatMessage(role="user", content="message-1"),
+        ChatMessage(role="assistant", content="message-2"),
+        ChatMessage(role="user", content="message-3"),
+        ChatMessage(role="assistant", content="message-4"),
+        ChatMessage(role="user", content="message-5"),
+    ]
+    state = await runtime.run(messages)
+
+    prompt = provider.calls[0]
+    assert prompt[0].content == "system-rule"
+    assert prompt[1].role == "assistant"
+    assert "message-1" in prompt[1].content
+    assert [message.content for message in prompt[2:]] == [
+        "message-3",
+        "message-4",
+        "message-5",
+    ]
+    assert len(state.data["messages"]) == len(messages) + 1
+    assert [message.content for message in state.data["context_layers"]["short_term"]] == [
+        "message-4",
+        "message-5",
+    ]
+    assert state.data["context_layers"]["omitted_message_count"] == 2
+    assert state.data["context_layers"]["summary"].role == "assistant"
+    assert "message-1" in state.data["context_layers"]["summary"].content
+
+
+@pytest.mark.anyio
+async def test_runtime_reuses_context_cache_between_after_sales_and_agent():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"repair","order_id":"ORD-CACHE",'
+            '"reason":"broken","requested_action":"repair",'
+            '"confidence":0.9}'
+        )
+    )
+    context_layers = ContextLayerManager()
+    runtime = WorkflowRuntime(
+        provider,
+        ToolRegistry(),
+        context_layer_manager=context_layers,
+    )
+
+    state = await runtime.run(
+        [ChatMessage(role="user", content="订单 ORD-CACHE 坏了需要维修")]
+    )
+
+    assert state.status is WorkflowStatus.COMPLETED
+    assert len(provider.calls) == 2
+    assert context_layers.cache.stats().misses == 1
+    assert context_layers.cache.stats().hits == 1
+
+
+@pytest.mark.anyio
 async def test_runtime_completes_normal_tool_call_path():
     provider = StubModelProvider(
         reply="工具查询完成",
@@ -112,6 +179,30 @@ async def test_runtime_shares_budget_between_after_sales_and_resume():
     assert failed.data["error"]["code"] == "token_budget_exceeded"
     assert failed.data["token_usage"]["total_tokens"] == 12
     assert len(provider.calls) == 2
+
+
+@pytest.mark.anyio
+async def test_runtime_returns_structured_failure_when_after_sales_exceeds_budget():
+    provider = StubModelProvider(
+        reply=(
+            '{"intent":"refund","order_id":"ORD-BUDGET",'
+            '"reason":"damaged","requested_action":"refund",'
+            '"confidence":0.9}'
+        ),
+        usage=TokenUsage(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+    )
+    runtime = WorkflowRuntime(provider, ToolRegistry(), token_budget=5)
+
+    state = await runtime.run(
+        [ChatMessage(role="user", content="ORD-BUDGET 到货破损，我要退款")]
+    )
+
+    assert state.status is WorkflowStatus.FAILED
+    assert state.current_node == "after-sales-intent"
+    assert state.data["error"]["code"] == "token_budget_exceeded"
+    assert state.data["token_usage"]["total_tokens"] == 6
+    assert state.data["token_budget"] == 5
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.anyio

@@ -8,6 +8,7 @@ from app.after_sales import AfterSalesExtractor
 from app.after_sales_intent import AfterSalesIntentNode
 from app.after_sales_routing import AfterSalesRoutingNode
 from app.contracts import ChatMessage, TokenUsage
+from app.context_layers import ContextLayerManager
 from app.context_reference_resolution import ContextReferenceResolutionNode
 from app.intent_routing import IntentRouterNode
 from app.providers import ChatModelProvider, StubModelProvider
@@ -67,10 +68,13 @@ class WorkflowRuntime:
     nodes: tuple[WorkflowNode, ...] | None = None
     checkpoint_store: WorkflowCheckpointStore | None = None
     token_budget: int | None = 2000
+    context_layer_manager: ContextLayerManager | None = None
 
     def __post_init__(self) -> None:
         if self.token_budget is not None and self.token_budget < 1:
             raise WorkflowRuntimeError("token_budget must be positive")
+        if self.context_layer_manager is None:
+            self.context_layer_manager = ContextLayerManager()
         if self.nodes is None:
             self.nodes = (
                 IntentRouterNode(),
@@ -111,6 +115,7 @@ class WorkflowRuntime:
             request_id=request_id or str(uuid4()),
             session_id=session_id,
             token_budget=self.token_budget,
+            context_layer_manager=self.context_layer_manager,
         )
         state = WorkflowState(data={
             "messages": [message.model_copy(deep=True) for message in messages],
@@ -181,6 +186,7 @@ class WorkflowRuntime:
             token_usage=TokenUsage.model_validate(
                 state.data.get("token_usage", {})
             ),
+            context_layer_manager=self.context_layer_manager,
         )
         context.apply_usage(state)
         checkpoint.run_id = context.run_id

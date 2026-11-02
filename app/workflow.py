@@ -1,10 +1,12 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Mapping, Protocol, runtime_checkable
 from uuid import uuid4
 
-from app.contracts import TokenUsage
+from app.contracts import ChatMessage, TokenUsage
+from app.context_layers import ContextLayerManager
 
 
 class WorkflowError(ValueError):
@@ -56,6 +58,9 @@ class WorkflowRuntimeContext:
     metadata: dict[str, str] = field(default_factory=dict)
     token_budget: int | None = None
     token_usage: TokenUsage = field(default_factory=TokenUsage)
+    context_layer_manager: ContextLayerManager = field(
+        default_factory=ContextLayerManager
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, str) or not self.request_id.strip():
@@ -111,6 +116,15 @@ class WorkflowRuntimeContext:
         state.data["token_usage"] = self.token_usage.model_dump(mode="json")
         if self.token_budget is not None:
             state.data["token_budget"] = self.token_budget
+
+    def prepare_context(
+        self,
+        state: "WorkflowState",
+        messages: Sequence[ChatMessage],
+    ) -> list[ChatMessage]:
+        layers = self.context_layer_manager.build(messages)
+        state.data["context_layers"] = layers.as_state()
+        return [message.model_copy(deep=True) for message in layers.prompt_messages]
 
 
 @runtime_checkable
