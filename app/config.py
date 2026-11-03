@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,7 +28,15 @@ class Settings(BaseSettings):
         default="https://api.siliconflow.cn/v1",
         min_length=1,
     )
-    embedding_api_key: str | None = Field(default=None, repr=False)
+    embedding_api_key: str | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices(
+            "EMBEDDING_API_KEY",
+            "EMBED_API_KEY",
+            "embedding_api_key",
+        ),
+    )
     embedding_dimension: int = Field(default=64, ge=2)
 
 

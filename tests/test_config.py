@@ -108,3 +108,12 @@ def test_settings_rejects_unknown_embedding_provider(monkeypatch):
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_settings_accepts_short_embedding_api_key_environment_name(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
+    monkeypatch.setenv("EMBED_API_KEY", "embedding-test-key")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.embedding_api_key == "embedding-test-key"
