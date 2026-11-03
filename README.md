@@ -23,7 +23,9 @@ CartPilot 是一个面向电商客服场景的 AI Agent 服务，逐步提供多
 - 可选的后台 HTTP 观测导出，默认只发送观测元数据，不发送对话正文；
 - 用户对回答的有用/无用反馈通过 SQLite 持久化，并关联请求与 Trace 标识。
 
-主题分类器采用独立的 17 类多标签主题体系（退换货、物流、尺码、发票、质量问题、运费、优惠活动、价保、支付、订单修改、库存补货、商品信息、保修维修、账号、会员积分、评价和其他），不替代 Workflow 的九类实时意图识别。训练样本使用 UTF-8 JSONL，每行包含版本、样本 ID、文本、一个或多个主题标签、来源及可选数据集拆分。数据准备会脱敏手机号、长数字单号和常见社交账号，规范空白、去重，并按标签组合可复现地划分训练、验证和测试集；当前未随仓库提供真实训练数据，亦未训练分类模型。可用以下命令处理自备样本：
+主题分类器采用独立的 17 类多标签主题体系（退换货、物流、尺码、发票、质量问题、运费、优惠活动、价保、支付、订单修改、库存补货、商品信息、保修维修、账号、会员积分、评价和其他），不替代 Workflow 的九类实时意图识别。训练样本使用 UTF-8 JSONL，每行包含版本、样本 ID、文本、一个或多个主题标签、来源及可选数据集拆分。数据准备会脱敏手机号、长数字单号和常见社交账号，规范空白、去重，并按标签组合可复现地划分训练、验证和测试集。
+
+当前验证使用 2,914 条合成客服样本（训练 2,592 条、验证 161 条、测试 161 条），并非真实客服对话或人工标注数据。数据、权重和推理产物保存在本地忽略目录 `data/ch10/`，不提交到 Git。准备其他样本时可运行：
 
 ```powershell
 uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir data/ch10/prepared --seed 42
@@ -31,7 +33,9 @@ uv run python -m app.classifier_data --input path/to/samples.jsonl --output-dir 
 
 输出目录包含三个切分后的 JSONL 文件和 `manifest.json`；清单记录输入文件 SHA-256、随机种子、各切分样本量及标签分布，不保存样本文本。
 
-训练配置入口 `app.classifier_training` 定义了 RoBERTa 模型标识、优化超参数和 `auto`/`cpu`/`cuda` 设备偏好，并提供惰性加载的 Transformers Trainer 训练入口。训练会校验设备、固定随机种子、按 17 类多标签任务加载模型，并在验证集记录 micro-F1、macro-F1、逐类 precision/recall/F1 与 one-vs-rest 混淆矩阵；最终模型、Tokenizer、训练指标和 `validation_report.json` 写入输出目录。当前尚未使用真实数据执行训练，也未验证本机 GPU。
+训练配置入口 `app.classifier_training` 定义了 RoBERTa 模型标识、优化超参数和 `auto`/`cpu`/`cuda` 设备偏好，并提供惰性加载的 Transformers Trainer 训练入口。训练会校验设备、固定随机种子、按 17 类多标签任务加载模型，并在验证集记录 micro-F1、macro-F1、逐类 precision/recall/F1 与 one-vs-rest 混淆矩阵；最终模型、Tokenizer、训练指标和 `validation_report.json` 写入输出目录。
+
+本项目已在 Kaggle CUDA 环境完成一次真实训练：3 epochs，验证集 micro-F1 为 0.7532、macro-F1 为 0.7137。该结果只反映当前合成数据集，不代表真实业务效果；例如“商品信息”类别验证集 F1 为 0，模型仍需更多有代表性的样本和评估。
 
 训练数据适配入口 `app.classifier_dataset` 会校验 train/validation 文件的拆分标记和文本隔离，将 17 类标签编码成多热浮点向量，并将文本交给注入的 tokenizer。该层不依赖 PyTorch/Transformers；训练依赖通过可选的 `ml` 依赖组安装，避免影响普通 API 运行时。
 
@@ -42,7 +46,7 @@ uv sync --group ml
 uv run --group ml python -m app.classifier_training --device cuda
 ```
 
-训练 CLI 默认读取 `data/ch10/dataset/train.jsonl` 和 `validation.jsonl`，并写入 `data/ch10/model`；可用 `--train`、`--validation`、`--output-dir`、`--model`、`--epochs`、`--batch-size`、`--learning-rate`、`--max-length`、`--seed` 覆盖。显式指定 `--device cuda` 时，如果 PyTorch 检测不到 CUDA 会直接失败；这一步只提供可执行入口，不代表已经完成真实训练验收。
+训练 CLI 默认读取 `data/ch10/dataset/train.jsonl` 和 `validation.jsonl`，并写入 `data/ch10/model`；可用 `--train`、`--validation`、`--output-dir`、`--model`、`--epochs`、`--batch-size`、`--learning-rate`、`--max-length`、`--seed` 覆盖。显式指定 `--device cuda` 时，如果 PyTorch 检测不到 CUDA 会直接失败。以上 CUDA 训练结果来自 Kaggle；没有声称在本机 GPU 上训练。
 
 训练产物就绪后，可将模型导出为 ONNX，并同时复制 Tokenizer 与分类阈值：
 
@@ -58,7 +62,7 @@ uv run --group ml python -m app.classifier_export --model-dir data/ch10/model --
 uv run --group ml python -m app.classifier_export_validation --model-dir data/ch10/model --onnx-dir data/ch10/onnx --test data/ch10/dataset/test.jsonl
 ```
 
-导出产物也可以通过 `app.classifier_inference.OnnxTopicClassifier` 独立加载。该组件按 ONNX 模型实际输入名完成批量分词和推理，读取导出目录中的阈值元数据，并在多标签结果为空时回退到最高概率主题；它目前作为旁路推理组件存在，尚未接入实时对话主链路，也不代表已经完成真实模型或 GPU 验收。
+导出产物也可以通过 `app.classifier_inference.OnnxTopicClassifier` 独立加载。该组件按 ONNX 模型实际输入名完成批量分词和推理，读取导出目录中的阈值元数据，并在多标签结果为空时回退到最高概率主题。它目前仍是旁路推理组件，尚未接入实时对话主链路。
 
 模型和 ONNX 运行时产物就绪后，可使用独立冒烟命令记录实际执行 Provider、延迟分位数和吞吐量。`--require-provider` 会在目标 Provider 不可用或运行时回退时直接失败，避免把 CPU 回退误记为 GPU 结果：
 
@@ -66,11 +70,11 @@ uv run --group ml python -m app.classifier_export_validation --model-dir data/ch
 uv run --group ml python -m app.classifier_benchmark --onnx-dir data/ch10/onnx --providers CUDAExecutionProvider CPUExecutionProvider --require-provider CUDAExecutionProvider --batch-size 8 --iterations 20 --output data/ch10/onnx/inference_benchmark.json
 ```
 
-当前仓库未附带真实训练数据、模型权重或 ONNX 产物，因此尚未执行真实 GPU 推理和性能验收。
+ONNX 导出、PyTorch/ONNX 测试集一致性和 CUDA 推理基准已在 Kaggle 完成：161 条测试样本的 logits 与阈值预测均无差异，ONNX Runtime active providers 包含 `CUDAExecutionProvider`；单样本、10 次测量的平均延迟约 4.68 ms，吞吐约 213.8 samples/s。该基准是特定 Kaggle GPU、模型和运行配置下的观测值，不是通用性能保证。
 
 ### 分类器全链路验收
 
-准备好真实数据、训练模型和 ONNX 产物后，可运行验收汇总命令：
+在准备好数据、训练模型和 ONNX 产物后，可运行验收汇总命令：
 
 ```powershell
 uv run python -m app.classifier_acceptance --root . --require-cuda
@@ -82,7 +86,9 @@ uv run python -m app.classifier_acceptance --root . --require-cuda
 uv run python -m app.classifier_acceptance --root . --require-cuda --strict
 ```
 
-只有性能报告中的 `active_providers` 实际包含 `CUDAExecutionProvider`，GPU 验收才会通过。验收脚本不会读取或提交数据集、模型权重、缓存、密钥和运行报告；这些内容继续被 `.gitignore` 排除。
+当前 Kaggle 严格验收结果为通过：实现、数据、模型、ONNX 导出、一致性、CUDA 基准及全量自动化测试均通过（423 passed）。复跑时，只有性能报告中的 `active_providers` 实际包含 `CUDAExecutionProvider`，GPU 验收才会通过。验收脚本不会读取或提交数据集、模型权重、缓存、密钥和运行报告；这些内容继续被 `.gitignore` 排除。
+
+**限制：**训练数据为合成样本，不支持真实客服效果结论；主题分类器尚未接入实时对话和 Workflow 主链路；Docker Compose 有服务编排配置，但本次分类器验收不等于已完成 Docker 容器端到端验收。
 
 ## 本地启动
 
