@@ -43,6 +43,11 @@ def create_vector_store(
         client = client_factory(uri=settings.milvus_uri)
     return MilvusVectorStore(
         client=client,
-        collection_name=settings.milvus_collection,
+        collection_name=settings.milvus_collection
+        or (
+            "cartpilot_chunks"
+            if dimension == 64
+            else f"cartpilot_chunks_{dimension}"
+        ),
         dimension=dimension,
     )

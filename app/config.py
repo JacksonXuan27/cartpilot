@@ -6,7 +6,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_ignore_empty=True,
+        extra="ignore",
+    )
 
     chat_provider: Literal["stub", "openai-compatible"] = "stub"
     chat_model: str = "local-stub"
@@ -17,7 +21,15 @@ class Settings(BaseSettings):
     database_timeout_seconds: float = Field(default=5.0, gt=0)
     database_pool_size: int = Field(default=5, ge=1)
     milvus_uri: str | None = None
-    milvus_collection: str = Field(default="cartpilot_chunks", min_length=1)
+    milvus_collection: str | None = Field(default=None, min_length=1)
+    embedding_provider: Literal["hash", "openai-compatible"] = "hash"
+    embedding_model: str = Field(default="BAAI/bge-m3", min_length=1)
+    embedding_base_url: str = Field(
+        default="https://api.siliconflow.cn/v1",
+        min_length=1,
+    )
+    embedding_api_key: str | None = Field(default=None, repr=False)
+    embedding_dimension: int = Field(default=64, ge=2)
 
 
 @lru_cache(maxsize=1)

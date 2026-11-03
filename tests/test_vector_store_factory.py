@@ -38,6 +38,21 @@ def test_vector_store_factory_builds_milvus_client_from_configured_uri():
     assert constructed == [{"uri": "http://milvus:19530"}]
 
 
+def test_vector_store_factory_uses_dimension_specific_default_collection():
+    settings = Settings(_env_file=None, milvus_uri="http://milvus:19530")
+
+    store = create_vector_store(
+        settings,
+        dimension=1024,
+        client_factory=lambda **kwargs: type(
+            "FakeMilvusClient", (), {"__init__": lambda self, **_: None}
+        )(),
+    )
+
+    assert isinstance(store, MilvusVectorStore)
+    assert store.collection_name == "cartpilot_chunks_1024"
+
+
 def test_importing_pymilvus_does_not_load_dotenv_into_process_environment(monkeypatch):
     names = ("CHAT_PROVIDER", "CHAT_MODEL", "CHAT_BASE_URL", "CHAT_API_KEY")
     for name in names:

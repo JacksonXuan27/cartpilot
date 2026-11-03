@@ -11,7 +11,7 @@ from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
 from app.data_models import UserFeedback
 from app.database import DatabaseManager
-from app.embeddings import HashEmbeddingProvider
+from app.embeddings import create_embedding_provider
 from app.contracts import (
     AfterSalesExtractionRequest,
     AfterSalesExtractionResponse,
@@ -87,7 +87,7 @@ app.state.chat_service = ChatService(
     model_provider=default_provider,
 )
 app.state.after_sales_extractor = AfterSalesExtractor(default_provider)
-default_embedding_provider = HashEmbeddingProvider(dimension=64)
+default_embedding_provider = create_embedding_provider(settings)
 app.state.knowledge_base_service = KnowledgeBaseService(
     embedding_provider=default_embedding_provider,
     vector_store=create_vector_store(
