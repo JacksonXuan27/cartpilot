@@ -4,7 +4,7 @@ from uuid import UUID
 import httpx
 import pytest
 
-from app.config import Settings
+from app.config import RerankerSettings, Settings
 from app.reranking import (
     LexicalReranker,
     Reranker,
@@ -241,3 +241,13 @@ def test_reranker_factory_requires_key_for_siliconflow():
 
     with pytest.raises(RerankerError, match="RERANK_API_KEY"):
         create_reranker(settings)
+
+
+def test_reranker_settings_can_load_without_chat_credentials(monkeypatch):
+    monkeypatch.setenv("RERANK_PROVIDER", "siliconflow")
+    monkeypatch.setenv("RERANK_API_KEY", "test-key")
+
+    settings = RerankerSettings(_env_file=None)
+    reranker = create_reranker(settings)
+
+    assert isinstance(reranker, SiliconFlowReranker)

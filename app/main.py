@@ -3,6 +3,7 @@ import json
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.config import get_reranker_settings
 from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
 from app.embeddings import HashEmbeddingProvider
@@ -19,6 +20,7 @@ from app.knowledge_base import (
     KnowledgeQueryResponse,
 )
 from app.providers import ModelProviderError, StubModelProvider
+from app.reranking import create_reranker
 from app.sessions import InMemorySessionStore, SessionNotFoundError
 from app.vector_store import InMemoryVectorStore
 
@@ -35,6 +37,7 @@ app.state.knowledge_base_service = KnowledgeBaseService(
     embedding_provider=default_embedding_provider,
     vector_store=InMemoryVectorStore(dimension=64),
     model_provider=default_provider,
+    reranker=create_reranker(get_reranker_settings()),
 )
 
 

@@ -8,7 +8,7 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 
-from app.config import Settings
+from app.config import RerankerSettings
 from app.keyword_retrieval import _tokenize
 from app.retrieval import RetrievalResult, RetrievalResultError
 
@@ -189,7 +189,7 @@ class SiliconFlowReranker:
             raise RerankerError("SiliconFlow returned an invalid rerank response") from None
 
 
-def create_reranker(settings: Settings) -> Reranker:
+def create_reranker(settings: RerankerSettings) -> Reranker:
     if settings.rerank_provider == "lexical":
         return LexicalReranker()
     if settings.rerank_api_key is None or not settings.rerank_api_key.strip():

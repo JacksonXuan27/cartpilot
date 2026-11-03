@@ -10,6 +10,8 @@ from app.confidence import ConfidencePolicy, ThresholdConfidencePolicy
 from app.contracts import ChatMessage
 from app.embeddings import EmbeddingError, EmbeddingProvider
 from app.providers import ChatModelProvider, ModelProviderError
+from app.reranking import Reranker, RerankerError
+from app.retrieval import from_vector_match
 from app.repositories import RetrievalRecordRepository
 from app.data_models import RetrievalHit, RetrievalRecord
 from app.vector_store import VectorMatch, VectorStore, VectorStoreError
@@ -51,6 +53,7 @@ class KnowledgeBaseService:
     vector_store: VectorStore
     model_provider: ChatModelProvider
     retrieval_repository: RetrievalRecordRepository | None = None
+    reranker: Reranker | None = None
     confidence_policy: ConfidencePolicy = field(
         default_factory=ThresholdConfidencePolicy
     )
@@ -62,12 +65,47 @@ class KnowledgeBaseService:
         try:
             query_vector = await self.embedding_provider.embed(request.query)
             matches = await self.vector_store.search(query_vector, request.top_k)
+            if self.reranker is not None and matches:
+                candidates = [
+                    from_vector_match(match) for match in matches
+                ]
+                reranked = await self.reranker.rerank(
+                    request.query,
+                    candidates,
+                    top_k=request.top_k,
+                )
+                original_matches = {match.record_id: match for match in matches}
+                if (
+                    len({candidate.record_id for candidate in reranked})
+                    != len(reranked)
+                    or any(
+                        candidate.record_id not in original_matches
+                        for candidate in reranked
+                    )
+                ):
+                    raise RerankerError("reranker returned unknown or duplicate candidates")
+                matches = [
+                    VectorMatch(
+                        record_id=candidate.record_id,
+                        document_id=original_matches[candidate.record_id].document_id,
+                        chunk_index=original_matches[candidate.record_id].chunk_index,
+                        content=original_matches[candidate.record_id].content,
+                        score=candidate.score,
+                        metadata=original_matches[candidate.record_id].metadata,
+                    )
+                    for candidate in reranked
+                ]
             decision = self.confidence_policy.evaluate(matches)
             if matches and not decision.accepted:
                 answer = self.low_confidence_message
             else:
                 answer = await self._generate_answer(request.query, matches)
-        except (EmbeddingError, VectorStoreError, ModelProviderError) as exc:
+        except (
+            EmbeddingError,
+            VectorStoreError,
+            ModelProviderError,
+            RerankerError,
+        ) as exc:
             raise KnowledgeBaseError(str(exc)) from exc
 
         sources = (
