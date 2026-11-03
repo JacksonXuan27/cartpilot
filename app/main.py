@@ -28,7 +28,7 @@ from app.config import get_settings
 from app.providers import ModelProviderError, create_chat_model_provider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
 from app.repositories import RecordNotFoundError, UserFeedbackRepository, initialize_schema
-from app.vector_store import InMemoryVectorStore
+from app.vector_store_factory import create_vector_store
 from app.workflow_runtime import (
     WorkflowRunRequest,
     WorkflowRunResponse,
@@ -80,7 +80,8 @@ feedback_database = DatabaseManager("sqlite:///./data/cartpilot.db")
 feedback_database.open()
 initialize_schema(feedback_database)
 app.state.feedback_repository = UserFeedbackRepository(feedback_database)
-default_provider = create_chat_model_provider(get_settings())
+settings = get_settings()
+default_provider = create_chat_model_provider(settings)
 app.state.chat_service = ChatService(
     session_store=InMemorySessionStore(),
     model_provider=default_provider,
@@ -89,7 +90,10 @@ app.state.after_sales_extractor = AfterSalesExtractor(default_provider)
 default_embedding_provider = HashEmbeddingProvider(dimension=64)
 app.state.knowledge_base_service = KnowledgeBaseService(
     embedding_provider=default_embedding_provider,
-    vector_store=InMemoryVectorStore(dimension=64),
+    vector_store=create_vector_store(
+        settings,
+        dimension=default_embedding_provider.dimension,
+    ),
     model_provider=default_provider,
 )
 app.state.workflow_runtime = default_workflow_runtime(default_provider)

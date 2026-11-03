@@ -23,6 +23,8 @@ def test_settings_reads_environment_values(monkeypatch):
         "DATABASE_URL": "sqlite:///./data/test.db",
         "DATABASE_TIMEOUT_SECONDS": "3.5",
         "DATABASE_POOL_SIZE": "3",
+        "MILVUS_URI": "http://milvus:19530",
+        "MILVUS_COLLECTION": "test_chunks",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -37,6 +39,8 @@ def test_settings_reads_environment_values(monkeypatch):
     assert settings.database_url == "sqlite:///./data/test.db"
     assert settings.database_timeout_seconds == 3.5
     assert settings.database_pool_size == 3
+    assert settings.milvus_uri == "http://milvus:19530"
+    assert settings.milvus_collection == "test_chunks"
 
 
 def test_settings_rejects_unknown_chat_provider(monkeypatch):
@@ -49,7 +53,17 @@ def test_settings_rejects_unknown_chat_provider(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_settings_loads_dotenv_file(tmp_path):
+def test_settings_loads_dotenv_file(tmp_path, monkeypatch):
+    for name in (
+        "CHAT_PROVIDER",
+        "CHAT_MODEL",
+        "CHAT_BASE_URL",
+        "CHAT_API_KEY",
+        "MILVUS_URI",
+        "MILVUS_COLLECTION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
     env_file = tmp_path / ".env"
     env_file.write_text(
         "CHAT_PROVIDER=openai-compatible\n"

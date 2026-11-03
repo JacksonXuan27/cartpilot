@@ -120,7 +120,7 @@ uv run uvicorn app.main:app --reload
 
 审核反馈可通过 POST /feedback/{feedback_id}/review 写回审核状态、备注和审核人；GET /feedback/export 按 JSONL 导出反馈及审核元数据，可使用 rating、review_status 和 limit 筛选。导出不包含对话正文。
 
-默认使用本地确定性模型替身。配置 `.env` 中的 `CHAT_PROVIDER=openai-compatible`、`CHAT_BASE_URL`、`CHAT_MODEL` 和 `CHAT_API_KEY` 后，普通对话、知识问答及售后信息提取会调用配置的 OpenAI API 规范兼容接口；不支持非标准扩展响应字段。真实模型可在 Workflow ReAct 循环中请求已注册的工具，并将调用结果回传模型；默认运行时尚未装配业务工具，实际可调用范围由运行时注册表决定。密钥不提交到 Git。
+默认使用本地确定性模型替身。配置 `.env` 中的 `CHAT_PROVIDER=openai-compatible`、`CHAT_BASE_URL`、`CHAT_MODEL` 和 `CHAT_API_KEY` 后，普通对话、知识问答及售后信息提取会调用配置的 OpenAI API 规范兼容接口；不支持非标准扩展响应字段。Docker Compose 默认将知识问答向量存储连接到 `milvus` 服务；本机直接运行时，只有设置 `MILVUS_URI` 才会启用 Milvus，否则使用内存向量库。真实模型可在 Workflow ReAct 循环中请求已注册的工具，并将调用结果回传模型；默认运行时尚未装配业务工具，实际可调用范围由运行时注册表决定。密钥不提交到 Git。
 
 如需接入自建观测服务或 Langfuse 兼容网关，可在 `.env` 中配置 `OBSERVABILITY_EXPORT_URL`，并按需设置 `OBSERVABILITY_API_KEY`。导出在后台队列中执行，观测服务不可用时不会阻塞对话和 Workflow 主链路；未配置端点时继续使用内存记录器。
 
@@ -134,6 +134,14 @@ docker compose up --build
 ```
 
 应用健康检查：`GET http://127.0.0.1:8000/healthz`；Milvus 健康检查由 Compose 自动执行。首次启动需要下载镜像，实际容器验收应在 Docker Desktop 引擎运行时进行。
+
+可选的真实 Milvus 集成测试使用临时 collection，并在结束时删除：
+
+```powershell
+$env:CARTPILOT_MILVUS_TEST_URI = "http://127.0.0.1:19530"
+uv run pytest tests/test_milvus_integration.py -q
+Remove-Item Env:CARTPILOT_MILVUS_TEST_URI
+```
 
 ## 测试
 

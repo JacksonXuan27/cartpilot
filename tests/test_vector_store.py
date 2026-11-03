@@ -61,6 +61,7 @@ class FakeMilvusClient:
         self.collections: set[str] = set()
         self.created: list[dict[str, object]] = []
         self.inserted: list[dict[str, object]] = []
+        self.upserted: list[dict[str, object]] = []
         self.searches: list[dict[str, object]] = []
         self.search_response = search_response if search_response is not None else [[]]
         self.insert_response = insert_response if insert_response is not None else {"code": 0}
@@ -77,13 +78,17 @@ class FakeMilvusClient:
         self.inserted.append(kwargs)
         return self.insert_response
 
+    def upsert(self, **kwargs):
+        self.upserted.append(kwargs)
+        return self.insert_response
+
     def search(self, **kwargs):
         self.searches.append(kwargs)
         return self.search_response
 
 
 @pytest.mark.asyncio
-async def test_milvus_store_creates_collection_inserts_and_searches():
+async def test_milvus_store_creates_string_keyed_collection_upserts_and_searches():
     document_id = uuid4()
     client = FakeMilvusClient(
         search_response=[
@@ -108,8 +113,11 @@ async def test_milvus_store_creates_collection_inserts_and_searches():
 
     assert written == 1
     assert client.created[0]["dimension"] == 3
-    assert client.inserted[0]["data"][0]["id"] == "chunk-1"
+    assert client.created[0]["id_type"] == "string"
+    assert client.upserted[0]["data"][0]["id"] == "chunk-1"
+    assert client.inserted == []
     assert client.searches[0]["limit"] == 5
+    assert client.searches[0]["consistency_level"] == "Strong"
     assert matches[0].document_id == document_id
     assert matches[0].metadata == {"source": "policy.md"}
 
@@ -124,3 +132,18 @@ async def test_milvus_store_validates_dimensions_and_response_errors():
 
     with pytest.raises(VectorStoreResponseError, match="unavailable"):
         await store.upsert([make_record("ok", (1.0, 0.0))])
+
+
+@pytest.mark.asyncio
+async def test_milvus_store_upsert_reuses_the_primary_key_for_repeated_records():
+    client = FakeMilvusClient()
+    store = MilvusVectorStore(client, "cartpilot_chunks", dimension=2)
+    record = make_record("stable-id", (1.0, 0.0))
+
+    await store.upsert([record])
+    await store.upsert([record])
+
+    assert [call["data"][0]["id"] for call in client.upserted] == [
+        "stable-id",
+        "stable-id",
+    ]

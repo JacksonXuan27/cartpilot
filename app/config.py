@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./data/cartpilot.db", min_length=1)
     database_timeout_seconds: float = Field(default=5.0, gt=0)
     database_pool_size: int = Field(default=5, ge=1)
+    milvus_uri: str | None = None
+    milvus_collection: str = Field(default="cartpilot_chunks", min_length=1)
 
 
 @lru_cache(maxsize=1)
