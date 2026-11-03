@@ -12,6 +12,7 @@ from app.knowledge_base import (
 )
 from app.main import app
 from app.providers import StubModelProvider
+from app.query_rewriting import QueryRewriteError
 from app.retrieval import RetrievalResult
 from app.reranking import RerankerError
 from app.vector_store import InMemoryVectorStore, VectorRecord
@@ -41,6 +42,19 @@ class FixedReranker:
             )
             for index, candidate in enumerate(reversed(candidates))
         ][:top_k]
+
+
+class FixedQueryRewriter:
+    def __init__(self, variants: list[str], *, fail: bool = False) -> None:
+        self.variants = variants
+        self.fail = fail
+        self.queries: list[str] = []
+
+    async def rewrite(self, query, max_variants=3):
+        self.queries.append(query)
+        if self.fail:
+            raise QueryRewriteError("query rewrite failed")
+        return self.variants[:max_variants]
 
 
 def make_service(reply: str = "退款通常在三个工作日内到账。") -> KnowledgeBaseService:
@@ -115,6 +129,53 @@ async def test_knowledge_service_uses_reranked_order_and_scores_for_confidence()
         "退款通常在三个工作日内到账。",
     ]
     assert [source.score for source in response.sources] == [0.95, 0.85]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_service_merges_results_from_rewritten_queries():
+    service = make_service()
+    rewriter = FixedQueryRewriter(["查快递", "查询物流"])
+    reranker = FixedReranker()
+    service.query_rewriter = rewriter
+    service.reranker = reranker
+    original_vector = await service.embedding_provider.embed("查快递")
+    rewritten_vector = await service.embedding_provider.embed("查询物流")
+    await service.vector_store.upsert(
+        [
+            VectorRecord(
+                record_id="original-hit",
+                document_id=DOCUMENT_ID,
+                chunk_index=0,
+                content="快递查询入口在订单详情页。",
+                vector=original_vector,
+            ),
+            VectorRecord(
+                record_id="rewritten-hit",
+                document_id=DOCUMENT_ID,
+                chunk_index=1,
+                content="物流信息可通过运单号查询。",
+                vector=rewritten_vector,
+            ),
+        ]
+    )
+
+    response = await service.query(KnowledgeQueryRequest(query="查快递", top_k=1))
+
+    assert rewriter.queries == ["查快递"]
+    assert [candidate.record_id for candidate in reranker.candidates] == [
+        "original-hit",
+        "rewritten-hit",
+    ]
+    assert len(response.sources) == 1
+
+
+@pytest.mark.asyncio
+async def test_knowledge_service_wraps_query_rewrite_failures():
+    service = make_service()
+    service.query_rewriter = FixedQueryRewriter([], fail=True)
+
+    with pytest.raises(KnowledgeBaseError, match="query rewrite failed"):
+        await service.query(KnowledgeQueryRequest(query="查快递"))
 
 
 @pytest.mark.asyncio

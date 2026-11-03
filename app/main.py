@@ -20,6 +20,7 @@ from app.knowledge_base import (
     KnowledgeQueryResponse,
 )
 from app.providers import ModelProviderError, StubModelProvider
+from app.query_rewriting import RuleBasedQueryRewriter
 from app.reranking import create_reranker
 from app.sessions import InMemorySessionStore, SessionNotFoundError
 from app.vector_store import InMemoryVectorStore
@@ -38,6 +39,7 @@ app.state.knowledge_base_service = KnowledgeBaseService(
     vector_store=InMemoryVectorStore(dimension=64),
     model_provider=default_provider,
     reranker=create_reranker(get_reranker_settings()),
+    query_rewriter=RuleBasedQueryRewriter(),
 )
 
 

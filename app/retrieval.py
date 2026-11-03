@@ -74,6 +74,7 @@ def reciprocal_rank_fusion(
     keyword_results: Sequence[RetrievalResult] = (),
     vector_results: Sequence[RetrievalResult] = (),
     *,
+    vector_result_groups: Sequence[Sequence[RetrievalResult]] = (),
     rank_constant: int = 60,
     keyword_weight: float = 1.0,
     vector_weight: float = 1.0,
@@ -94,21 +95,23 @@ def reciprocal_rank_fusion(
     representatives: dict[str, RetrievalResult] = {}
     methods: dict[str, set[RetrievalMethod]] = {}
     metadata: dict[str, dict[str, str]] = {}
-    for weight, method, results in (
-        (keyword_weight, "keyword", keyword_results),
-        (vector_weight, "vector", vector_results),
+    for weight, method, groups in (
+        (keyword_weight, "keyword", (keyword_results,)),
+        (vector_weight, "vector", (vector_results, *vector_result_groups)),
     ):
-        for rank, result in enumerate(results, start=1):
-            if result.method != method:
-                raise RetrievalResultError(
-                    f"{method} result has incompatible method: {result.method}"
+        for results in groups:
+            for rank, result in enumerate(results, start=1):
+                if result.method != method:
+                    raise RetrievalResultError(
+                        f"{method} result has incompatible method: {result.method}"
+                    )
+                contributions[result.record_id] = (
+                    contributions.get(result.record_id, 0.0)
+                    + weight / (rank_constant + rank)
                 )
-            contributions[result.record_id] = contributions.get(result.record_id, 0.0) + (
-                weight / (rank_constant + rank)
-            )
-            representatives.setdefault(result.record_id, result)
-            methods.setdefault(result.record_id, set()).add(method)
-            metadata.setdefault(result.record_id, {}).update(result.metadata)
+                representatives.setdefault(result.record_id, result)
+                methods.setdefault(result.record_id, set()).add(method)
+                metadata.setdefault(result.record_id, {}).update(result.metadata)
 
     fused: list[RetrievalResult] = []
     for record_id, score in contributions.items():

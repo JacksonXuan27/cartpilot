@@ -1,3 +1,4 @@
+import asyncio
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -10,8 +11,9 @@ from app.confidence import ConfidencePolicy, ThresholdConfidencePolicy
 from app.contracts import ChatMessage
 from app.embeddings import EmbeddingError, EmbeddingProvider
 from app.providers import ChatModelProvider, ModelProviderError
+from app.query_rewriting import QueryRewriter, QueryRewriteError
 from app.reranking import Reranker, RerankerError
-from app.retrieval import from_vector_match
+from app.retrieval import from_vector_match, reciprocal_rank_fusion
 from app.repositories import RetrievalRecordRepository
 from app.data_models import RetrievalHit, RetrievalRecord
 from app.vector_store import VectorMatch, VectorStore, VectorStoreError
@@ -54,6 +56,7 @@ class KnowledgeBaseService:
     model_provider: ChatModelProvider
     retrieval_repository: RetrievalRecordRepository | None = None
     reranker: Reranker | None = None
+    query_rewriter: QueryRewriter | None = None
     confidence_policy: ConfidencePolicy = field(
         default_factory=ThresholdConfidencePolicy
     )
@@ -63,8 +66,39 @@ class KnowledgeBaseService:
         request_id = str(uuid4())
         started_at = time.perf_counter()
         try:
-            query_vector = await self.embedding_provider.embed(request.query)
-            matches = await self.vector_store.search(query_vector, request.top_k)
+            queries = (
+                await self.query_rewriter.rewrite(request.query)
+                if self.query_rewriter is not None
+                else [request.query]
+            )
+            if not queries:
+                raise QueryRewriteError("query rewriter returned no variants")
+            queries = list(dict.fromkeys(queries))
+            query_vectors = await asyncio.gather(
+                *(self.embedding_provider.embed(query) for query in queries)
+            )
+            result_groups = await asyncio.gather(
+                *(
+                    self.vector_store.search(query_vector, request.top_k)
+                    for query_vector in query_vectors
+                )
+            )
+            candidate_matches: dict[str, VectorMatch] = {}
+            result_candidates = []
+            for result_group in result_groups:
+                result_candidates.append(
+                    [from_vector_match(match) for match in result_group]
+                )
+                for match in result_group:
+                    current = candidate_matches.get(match.record_id)
+                    if current is None or match.score > current.score:
+                        candidate_matches[match.record_id] = match
+            fused = reciprocal_rank_fusion(
+                vector_results=result_candidates[0],
+                vector_result_groups=result_candidates[1:],
+                top_k=request.top_k * len(queries),
+            )
+            matches = [candidate_matches[result.record_id] for result in fused]
             if self.reranker is not None and matches:
                 candidates = [
                     from_vector_match(match) for match in matches
@@ -95,6 +129,8 @@ class KnowledgeBaseService:
                     )
                     for candidate in reranked
                 ]
+            else:
+                matches = matches[: request.top_k]
             decision = self.confidence_policy.evaluate(matches)
             if matches and not decision.accepted:
                 answer = self.low_confidence_message
@@ -104,6 +140,7 @@ class KnowledgeBaseService:
             EmbeddingError,
             VectorStoreError,
             ModelProviderError,
+            QueryRewriteError,
             RerankerError,
         ) as exc:
             raise KnowledgeBaseError(str(exc)) from exc

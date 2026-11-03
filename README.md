@@ -40,7 +40,7 @@ uv run uvicorn app.main:app --reload
 - 售后信息提取：`POST http://127.0.0.1:8000/after-sales/extract`。
 - 知识库问答：`POST http://127.0.0.1:8000/knowledge/query`。
 
-当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。`/knowledge/query` 默认使用本地 `LexicalReranker`；配置 `RERANK_PROVIDER=siliconflow`、`RERANK_MODEL`、`RERANK_BASE_URL` 和 `RERANK_API_KEY` 后，应用会在向量候选检索后调用 SiliconFlow 重排，并按重排分数执行置信度判断。重排服务失败时接口返回可重试的知识库错误。重排配置独立于聊天模型凭据。
+当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。`/knowledge/query` 使用本地规则改写查询，分别检索并通过 RRF 合并候选，再由本地 `LexicalReranker` 排序；配置 `RERANK_PROVIDER=siliconflow`、`RERANK_MODEL`、`RERANK_BASE_URL` 和 `RERANK_API_KEY` 后，会改用 SiliconFlow 重排，并按重排分数执行置信度判断。没有启用重排时，置信度判断仍使用向量相似度。重排配置独立于聊天模型凭据。
 
 ## Docker 服务
 
