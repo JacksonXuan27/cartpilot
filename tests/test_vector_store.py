@@ -56,6 +56,31 @@ async def test_in_memory_store_upsert_replaces_existing_record():
     assert matches[0].score == pytest.approx(1.0)
 
 
+@pytest.mark.asyncio
+async def test_in_memory_store_deletes_document_chunks_from_requested_index():
+    store = InMemoryVectorStore(dimension=2)
+    document_id = uuid4()
+    records = [
+        VectorRecord(
+            record_id=f"chunk-{chunk_index}",
+            document_id=document_id,
+            chunk_index=chunk_index,
+            content=f"chunk {chunk_index}",
+            vector=(1.0, 0.0),
+        )
+        for chunk_index in range(3)
+    ]
+    await store.upsert(records)
+
+    delete_document_chunks = getattr(store, "delete_document_chunks", None)
+    assert callable(delete_document_chunks)
+    deleted = await delete_document_chunks(document_id, from_chunk_index=2)
+
+    assert deleted == 1
+    matches = await store.search((1.0, 0.0), top_k=10)
+    assert [match.chunk_index for match in matches] == [0, 1]
+
+
 class FakeMilvusClient:
     def __init__(self, search_response=None, insert_response=None):
         self.collections: set[str] = set()
@@ -85,6 +110,10 @@ class FakeMilvusClient:
     def search(self, **kwargs):
         self.searches.append(kwargs)
         return self.search_response
+
+    def delete(self, **kwargs):
+        self.deleted = kwargs
+        return {"delete_count": 1}
 
 
 @pytest.mark.asyncio
@@ -147,3 +176,18 @@ async def test_milvus_store_upsert_reuses_the_primary_key_for_repeated_records()
         "stable-id",
         "stable-id",
     ]
+
+
+@pytest.mark.asyncio
+async def test_milvus_store_deletes_only_trailing_document_chunks():
+    client = FakeMilvusClient()
+    store = MilvusVectorStore(client, "cartpilot_chunks", dimension=2)
+    document_id = uuid4()
+
+    deleted = await store.delete_document_chunks(document_id, from_chunk_index=3)
+
+    assert deleted == 1
+    assert client.deleted == {
+        "collection_name": "cartpilot_chunks",
+        "filter": f'document_id == "{document_id}" and chunk_index >= 3',
+    }

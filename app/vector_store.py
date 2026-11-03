@@ -50,6 +50,11 @@ class VectorStore(Protocol):
     async def upsert(self, records: Sequence[VectorRecord]) -> int:
         """Insert or update vector records and return the number written."""
 
+    async def delete_document_chunks(
+        self, document_id: UUID, *, from_chunk_index: int
+    ) -> int:
+        """Delete chunks for a document at or after the given index."""
+
     async def search(
         self, query_vector: EmbeddingVector, top_k: int = 5
     ) -> list[VectorMatch]:
@@ -71,6 +76,21 @@ class InMemoryVectorStore:
         for record in records:
             self._records[record.record_id] = record
         return len(records)
+
+    async def delete_document_chunks(
+        self, document_id: UUID, *, from_chunk_index: int
+    ) -> int:
+        if from_chunk_index < 0:
+            raise VectorStoreError("from_chunk_index must be non-negative")
+        record_ids = [
+            record_id
+            for record_id, record in self._records.items()
+            if record.document_id == document_id
+            and record.chunk_index >= from_chunk_index
+        ]
+        for record_id in record_ids:
+            del self._records[record_id]
+        return len(record_ids)
 
     async def search(
         self, query_vector: EmbeddingVector, top_k: int = 5
@@ -127,6 +147,8 @@ class MilvusClientLike(Protocol):
 
     def search(self, **kwargs: Any) -> Any: ...
 
+    def delete(self, **kwargs: Any) -> Any: ...
+
 
 @dataclass(slots=True)
 class MilvusVectorStore:
@@ -156,6 +178,30 @@ class MilvusVectorStore:
         )
         self._check_response(response, "upsert")
         return len(records)
+
+    async def delete_document_chunks(
+        self, document_id: UUID, *, from_chunk_index: int
+    ) -> int:
+        if from_chunk_index < 0:
+            raise VectorStoreError("from_chunk_index must be non-negative")
+        await self._ensure_collection()
+        response = await asyncio.to_thread(
+            self.client.delete,
+            collection_name=self.collection_name,
+            filter=(
+                f'document_id == "{document_id}" '
+                f"and chunk_index >= {from_chunk_index}"
+            ),
+        )
+        self._check_response(response, "delete")
+        if isinstance(response, Mapping):
+            deleted = response.get("delete_count", 0)
+            if not isinstance(deleted, int) or deleted < 0:
+                raise VectorStoreResponseError(
+                    "Milvus delete returned an invalid delete_count"
+                )
+            return deleted
+        return 0
 
     async def search(
         self, query_vector: EmbeddingVector, top_k: int = 5

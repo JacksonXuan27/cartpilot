@@ -122,6 +122,14 @@ uv run uvicorn app.main:app --reload
 
 默认使用本地确定性模型替身。配置 `.env` 中的 `CHAT_PROVIDER=openai-compatible`、`CHAT_BASE_URL`、`CHAT_MODEL` 和 `CHAT_API_KEY` 后，普通对话、知识问答及售后信息提取会调用配置的 OpenAI API 规范兼容接口；不支持非标准扩展响应字段。知识库 Embedding 默认使用 64 维本地 Hash 替身。需要语义向量时，可配置 `EMBEDDING_PROVIDER=openai-compatible`、`EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1`、`EMBEDDING_MODEL=BAAI/bge-m3`、`EMBEDDING_API_KEY` 和 `EMBEDDING_DIMENSION=1024`。为兼容已有环境，凭据变量 `EMBED_API_KEY` 也可代替 `EMBEDDING_API_KEY`；Embedding API 凭据与聊天凭据相互独立，未提供 Key 时应用会明确拒绝以远程模式启动。Milvus 默认 collection 名按向量维度区分：既有 64 维数据继续使用 `cartpilot_chunks`，1024 维 BGE-M3 使用 `cartpilot_chunks_1024`；可用 `MILVUS_COLLECTION` 显式指定名称。Docker Compose 默认将知识问答向量存储连接到 `milvus` 服务；本机直接运行时，只有设置 `MILVUS_URI` 才会启用 Milvus，否则使用内存向量库。当前重排器是本地词法实现，尚未消费 `RERANK_API_KEY`；该变量可暂时留在 `.env`，但不会触发远程重排请求。真实模型可在 Workflow ReAct 循环中请求已注册的工具，并将调用结果回传模型；默认运行时尚未装配业务工具，实际可调用范围由运行时注册表决定。密钥不提交到 Git。
 
+将 UTF-8 文本或 Markdown 知识文档写入 SQLite 元数据和 Milvus 向量库，可使用导入命令：
+
+```powershell
+uv run python -m app.document_import .\data\knowledge\refund-policy.md --source refund-policy --title 退款政策
+```
+
+命令要求 `MILVUS_URI` 指向可访问的 Milvus；从本机连接 Docker Compose 时使用 `http://127.0.0.1:19530`。首次导入会清洗、切块并批量生成向量；使用相同 `--source` 重导入会更新文档版本、覆盖对应分块并清理多余尾部分块。可通过 `--chunk-size`、`--overlap-chars` 和 `--batch-size` 调整处理参数。导入命令的自动化测试使用内存替身，不代表本机真实 Embedding API 或 Milvus 已完成联调。
+
 如需接入自建观测服务或 Langfuse 兼容网关，可在 `.env` 中配置 `OBSERVABILITY_EXPORT_URL`，并按需设置 `OBSERVABILITY_API_KEY`。导出在后台队列中执行，观测服务不可用时不会阻塞对话和 Workflow 主链路；未配置端点时继续使用内存记录器。
 
 ## Docker 服务
@@ -167,6 +175,7 @@ uv run pytest
 | `app/data_models.py` | 持久化与检索数据模型 |
 | `app/repositories.py` | SQLite Repository 与表初始化 |
 | `app/document_processing.py` | 文档清洗和文本切块 |
+| `app/document_ingestion.py` / `app/document_import.py` | 文档版本管理、向量索引和命令行导入 |
 | `app/embeddings.py` | Embedding 接口和本地替身 |
 | `app/vector_store.py` | 内存向量库和 Milvus 适配器 |
 | `app/knowledge_base.py` | 知识库检索与问答服务 |
