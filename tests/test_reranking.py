@@ -1,8 +1,17 @@
+import json
 from uuid import UUID
 
+import httpx
 import pytest
 
-from app.reranking import LexicalReranker, Reranker, RerankerError
+from app.config import Settings
+from app.reranking import (
+    LexicalReranker,
+    Reranker,
+    RerankerError,
+    SiliconFlowReranker,
+    create_reranker,
+)
 from app.retrieval import RetrievalResult
 
 
@@ -94,3 +103,141 @@ async def test_reranker_rejects_invalid_query(query):
 async def test_reranker_rejects_invalid_top_k():
     with pytest.raises(RerankerError, match="top_k"):
         await LexicalReranker().rerank("退款", [], top_k=0)
+
+
+@pytest.mark.asyncio
+async def test_siliconflow_reranker_maps_response_indices_to_original_candidates():
+    requests = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"index": 2, "relevance_score": 0.97},
+                    {"index": 1, "relevance_score": 0.82},
+                ]
+            },
+        )
+
+    candidates = [
+        make_result("generic", "物流的一般说明", 0.8),
+        make_result("refund", "退款政策说明", 0.3),
+        make_result("return", "退货退款详细流程", 0.2),
+    ]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle_request)) as client:
+        reranker = SiliconFlowReranker(
+            model="BAAI/bge-reranker-v2-m3",
+            api_key="test-key",
+            base_url="https://api.siliconflow.cn/v1",
+            client=client,
+        )
+
+        ranked = await reranker.rerank("如何申请退货退款", candidates, top_k=2)
+
+    assert isinstance(reranker, Reranker)
+    assert [candidate.record_id for candidate in ranked] == ["return", "refund"]
+    assert [candidate.score for candidate in ranked] == [0.97, 0.82]
+    assert all(candidate.method == "hybrid" for candidate in ranked)
+    assert requests[0].url == "https://api.siliconflow.cn/v1/rerank"
+    assert requests[0].headers["authorization"] == "Bearer test-key"
+    assert json.loads(requests[0].content) == {
+        "model": "BAAI/bge-reranker-v2-m3",
+        "query": "如何申请退货退款",
+        "documents": [candidate.content for candidate in candidates],
+        "top_n": 2,
+        "return_documents": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_siliconflow_reranker_sanitizes_upstream_errors():
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="private upstream response")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle_request)) as client:
+        reranker = SiliconFlowReranker(
+            model="BAAI/bge-reranker-v2-m3",
+            api_key="test-key",
+            base_url="https://api.siliconflow.cn/v1",
+            client=client,
+        )
+        with pytest.raises(RerankerError, match="request failed") as error:
+            await reranker.rerank("refund", [make_result("one", "refund policy", 1)])
+
+    assert "private upstream" not in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "results",
+    [
+        [{"index": 0, "relevance_score": 0.8}, {"index": 0, "relevance_score": 0.7}],
+        [{"index": 4, "relevance_score": 0.8}],
+    ],
+)
+async def test_siliconflow_reranker_rejects_invalid_response_indices_and_scores(results):
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"results": results})
+        )
+    ) as client:
+        reranker = SiliconFlowReranker(
+            model="BAAI/bge-reranker-v2-m3",
+            api_key="test-key",
+            base_url="https://api.siliconflow.cn/v1",
+            client=client,
+        )
+        with pytest.raises(RerankerError, match="response"):
+            await reranker.rerank(
+                "refund",
+                [make_result("one", "refund policy", 1)],
+            )
+
+
+@pytest.mark.asyncio
+async def test_siliconflow_reranker_rejects_non_finite_response_scores():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=b'{"results":[{"index":0,"relevance_score":NaN}]}',
+            )
+        )
+    ) as client:
+        reranker = SiliconFlowReranker(
+            model="BAAI/bge-reranker-v2-m3",
+            api_key="test-key",
+            base_url="https://api.siliconflow.cn/v1",
+            client=client,
+        )
+        with pytest.raises(RerankerError, match="response"):
+            await reranker.rerank(
+                "refund",
+                [make_result("one", "refund policy", 1)],
+            )
+
+
+def test_reranker_factory_uses_lexical_default():
+    settings = Settings(
+        _env_file=None,
+        chat_model="chat",
+        chat_base_url="https://chat.example/v1",
+        chat_api_key="chat-key",
+    )
+
+    assert isinstance(create_reranker(settings), LexicalReranker)
+
+
+def test_reranker_factory_requires_key_for_siliconflow():
+    settings = Settings(
+        _env_file=None,
+        chat_model="chat",
+        chat_base_url="https://chat.example/v1",
+        chat_api_key="chat-key",
+        rerank_provider="siliconflow",
+    )
+
+    with pytest.raises(RerankerError, match="RERANK_API_KEY"):
+        create_reranker(settings)

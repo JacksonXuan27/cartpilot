@@ -9,6 +9,10 @@ services:
       CHAT_MODEL: ${CHAT_MODEL:-local-stub}
       CHAT_BASE_URL: ${CHAT_BASE_URL:-http://localhost:8000/v1}
       CHAT_API_KEY: ${CHAT_API_KEY:-local-development-key}
+      RERANK_PROVIDER: ${RERANK_PROVIDER:-lexical}
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANK_BASE_URL: ${RERANK_BASE_URL:-https://api.siliconflow.cn/v1}
+      RERANK_API_KEY: ${RERANK_API_KEY:-}
       DATABASE_URL: ${DATABASE_URL:-sqlite:///./data/cartpilot.db}
       MILVUS_URI: ${MILVUS_URI:-http://milvus:19530}
       MILVUS_COLLECTION: ${MILVUS_COLLECTION:-cartpilot_chunks}
