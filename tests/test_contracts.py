@@ -44,6 +44,18 @@ def test_chat_response_contains_message_and_usage_contract():
     assert response.usage.total_tokens == 14
 
 
+def test_assistant_tool_call_survives_internal_round_trip_without_public_schema_leak():
+    message = ChatMessage.assistant_tool_call(
+        "",
+        [{"id": "call-1", "name": "order.query", "arguments": {"order_id": "ORD-1"}}],
+    )
+    copied = message.model_copy(deep=True)
+
+    assert copied.tool_calls[0].id == "call-1"
+    assert copied.model_dump(mode="json") == {"role": "assistant", "content": ""}
+    assert "tool_calls" not in ChatMessage.model_json_schema()["properties"]
+
+
 def test_error_response_exposes_machine_code_and_retryability():
     response = ErrorResponse(
         error=ErrorDetail(

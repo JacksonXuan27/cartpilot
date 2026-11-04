@@ -106,5 +106,11 @@ def workflow_response(state: WorkflowState) -> WorkflowRunResponse:
     )
 
 
-def default_workflow_runtime() -> WorkflowRuntime:
-    return WorkflowRuntime(StubModelProvider(), ToolRegistry())
+def default_workflow_runtime(
+    model_provider: ChatModelProvider | None = None,
+    tool_registry: ToolRegistry | None = None,
+) -> WorkflowRuntime:
+    return WorkflowRuntime(
+        model_provider if model_provider is not None else StubModelProvider(),
+        tool_registry if tool_registry is not None else ToolRegistry(),
+    )

@@ -1,9 +1,17 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
+
+
+class ToolCallMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    arguments: dict[str, object]
 
 
 class ChatMessage(BaseModel):
@@ -12,6 +20,24 @@ class ChatMessage(BaseModel):
     role: MessageRole
     content: str = Field(min_length=1)
     tool_call_id: str | None = Field(default=None, min_length=1, exclude=True)
+    _tool_calls: tuple[ToolCallMessage, ...] = PrivateAttr(default=())
+
+    @property
+    def tool_calls(self) -> tuple[ToolCallMessage, ...]:
+        return self._tool_calls
+
+    @classmethod
+    def assistant_tool_call(
+        cls, content: str, tool_calls: list[ToolCallMessage]
+    ) -> "ChatMessage":
+        validated_calls = tuple(
+            ToolCallMessage.model_validate(call) for call in tool_calls
+        )
+        if not isinstance(content, str) or (not content.strip() and not validated_calls):
+            raise ValueError("assistant messages require content or tool calls")
+        message = cls.model_construct(role="assistant", content=content)
+        message._tool_calls = validated_calls
+        return message
 
     @model_validator(mode="after")
     def validate_tool_call_id(self) -> "ChatMessage":

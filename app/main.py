@@ -1,8 +1,9 @@
 import json
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.config import Settings, get_settings
 from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
 from app.embeddings import HashEmbeddingProvider
@@ -18,8 +19,12 @@ from app.knowledge_base import (
     KnowledgeQueryRequest,
     KnowledgeQueryResponse,
 )
-from app.providers import ModelProviderError, StubModelProvider
+from app.providers import (
+    ModelProviderError,
+    create_chat_model_provider,
+)
 from app.sessions import InMemorySessionStore, SessionNotFoundError
+from app.tool_registry import ToolRegistry
 from app.vector_store import InMemoryVectorStore
 from app.workflow_runtime import (
     WorkflowRunRequest,
@@ -30,28 +35,44 @@ from app.workflow_runtime import (
 )
 
 
-app = FastAPI(title="CartPilot")
-default_provider = StubModelProvider()
-app.state.chat_service = ChatService(
-    session_store=InMemorySessionStore(),
-    model_provider=default_provider,
-)
-app.state.after_sales_extractor = AfterSalesExtractor(default_provider)
-default_embedding_provider = HashEmbeddingProvider(dimension=64)
-app.state.knowledge_base_service = KnowledgeBaseService(
-    embedding_provider=default_embedding_provider,
-    vector_store=InMemoryVectorStore(dimension=64),
-    model_provider=default_provider,
-)
-app.state.workflow_runtime = default_workflow_runtime()
+router = APIRouter()
 
 
-@app.get("/healthz")
+def create_app(
+    settings: Settings | None = None,
+    *,
+    tool_registry: ToolRegistry | None = None,
+    model_provider=None,
+) -> FastAPI:
+    settings = settings if settings is not None else get_settings()
+    provider = (
+        model_provider
+        if model_provider is not None
+        else create_chat_model_provider(settings)
+    )
+    application = FastAPI(title="CartPilot")
+    application.state.chat_service = ChatService(
+        session_store=InMemorySessionStore(), model_provider=provider
+    )
+    application.state.after_sales_extractor = AfterSalesExtractor(provider)
+    application.state.knowledge_base_service = KnowledgeBaseService(
+        embedding_provider=HashEmbeddingProvider(dimension=64),
+        vector_store=InMemoryVectorStore(dimension=64),
+        model_provider=provider,
+    )
+    application.state.workflow_runtime = default_workflow_runtime(
+        provider, tool_registry
+    )
+    application.include_router(router)
+    return application
+
+
+@router.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"service": "cartpilot", "status": "ok"}
 
 
-@app.post("/workflow/run", response_model=WorkflowRunResponse)
+@router.post("/workflow/run", response_model=WorkflowRunResponse)
 async def workflow_run(
     request: WorkflowRunRequest, http_request: Request
 ) -> WorkflowRunResponse:
@@ -60,7 +81,7 @@ async def workflow_run(
     return workflow_response(state)
 
 
-@app.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse | JSONResponse:
     service: ChatService = http_request.app.state.chat_service
     try:
@@ -94,7 +115,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse | JS
         )
 
 
-@app.post("/after-sales/extract", response_model=AfterSalesExtractionResponse)
+@router.post("/after-sales/extract", response_model=AfterSalesExtractionResponse)
 async def extract_after_sales(
     request: AfterSalesExtractionRequest, http_request: Request
 ) -> AfterSalesExtractionResponse | JSONResponse:
@@ -121,7 +142,7 @@ async def extract_after_sales(
         )
 
 
-@app.post("/knowledge/query", response_model=KnowledgeQueryResponse)
+@router.post("/knowledge/query", response_model=KnowledgeQueryResponse)
 async def knowledge_query(
     request: KnowledgeQueryRequest, http_request: Request
 ) -> KnowledgeQueryResponse | JSONResponse:
@@ -139,7 +160,7 @@ async def knowledge_query(
         )
 
 
-@app.post("/chat/stream", response_model=None)
+@router.post("/chat/stream", response_model=None)
 async def chat_stream(request: ChatRequest, http_request: Request) -> StreamingResponse | JSONResponse:
     service: ChatService = http_request.app.state.chat_service
     try:
@@ -187,3 +208,6 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> StreamingR
             yield f"event: error\ndata: {json.dumps(error)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+app = create_app()

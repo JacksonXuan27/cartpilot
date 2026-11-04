@@ -15,6 +15,7 @@ CartPilot 是一个面向电商客服场景的 AI Agent 服务，逐步提供多
 - 非流式对话接口 `POST /chat`；
 - SSE 流式对话接口 `POST /chat/stream`；
 - 售后意图、订单号、原因和处理请求的结构化提取接口。
+- Workflow + ReAct Agent 接口 `POST /workflow/run`，支持配置兼容模型和注册工具。
 - 订单、知识文档和检索记录的数据模型与 SQLite Repository；
 - 文档清洗、切块、Embedding 抽象和本地确定性向量替身；
 - Milvus 向量存储适配器与知识库问答接口 `POST /knowledge/query`；
@@ -38,9 +39,10 @@ uv run uvicorn app.main:app --reload
 - 非流式对话：`POST http://127.0.0.1:8000/chat`；
 - SSE 流式对话：`POST http://127.0.0.1:8000/chat/stream`；
 - 售后信息提取：`POST http://127.0.0.1:8000/after-sales/extract`。
+- Workflow Agent：`POST http://127.0.0.1:8000/workflow/run`。
 - 知识库问答：`POST http://127.0.0.1:8000/knowledge/query`。
 
-当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。
+将 `CHAT_PROVIDER` 设为 `openai-compatible` 后，Workflow Agent 使用 `.env` 中的 `CHAT_BASE_URL`、`CHAT_MODEL` 和 `CHAT_API_KEY`；默认为 `stub`，便于在没有外部模型密钥时运行测试。密钥不提交到 Git。
 
 ## Docker 服务
 
