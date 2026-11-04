@@ -1,12 +1,14 @@
+import asyncio
 import json
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.config import get_reranker_settings
+from app.config import Settings, get_settings
 from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
-from app.embeddings import HashEmbeddingProvider
+from app.embeddings import create_embedding_provider
 from app.contracts import (
     AfterSalesExtractionRequest,
     AfterSalesExtractionResponse,
@@ -19,36 +21,23 @@ from app.knowledge_base import (
     KnowledgeQueryRequest,
     KnowledgeQueryResponse,
 )
-from app.providers import ModelProviderError, StubModelProvider
+from app.providers import ModelProviderError, create_chat_model_provider
 from app.query_rewriting import RuleBasedQueryRewriter
 from app.reranking import create_reranker
 from app.sessions import InMemorySessionStore, SessionNotFoundError
-from app.vector_store import InMemoryVectorStore
+from app.vector_store import MilvusVectorStore
+from app.vector_store_factory import create_vector_store
 
 
-app = FastAPI(title="CartPilot")
-default_provider = StubModelProvider()
-app.state.chat_service = ChatService(
-    session_store=InMemorySessionStore(),
-    model_provider=default_provider,
-)
-app.state.after_sales_extractor = AfterSalesExtractor(default_provider)
-default_embedding_provider = HashEmbeddingProvider(dimension=64)
-app.state.knowledge_base_service = KnowledgeBaseService(
-    embedding_provider=default_embedding_provider,
-    vector_store=InMemoryVectorStore(dimension=64),
-    model_provider=default_provider,
-    reranker=create_reranker(get_reranker_settings()),
-    query_rewriter=RuleBasedQueryRewriter(),
-)
+router = APIRouter()
 
 
-@app.get("/healthz")
+@router.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"service": "cartpilot", "status": "ok"}
 
 
-@app.post("/chat", response_model=ChatResponse)
+@router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, http_request: Request) -> ChatResponse | JSONResponse:
     service: ChatService = http_request.app.state.chat_service
     try:
@@ -82,7 +71,7 @@ async def chat(request: ChatRequest, http_request: Request) -> ChatResponse | JS
         )
 
 
-@app.post("/after-sales/extract", response_model=AfterSalesExtractionResponse)
+@router.post("/after-sales/extract", response_model=AfterSalesExtractionResponse)
 async def extract_after_sales(
     request: AfterSalesExtractionRequest, http_request: Request
 ) -> AfterSalesExtractionResponse | JSONResponse:
@@ -109,7 +98,7 @@ async def extract_after_sales(
         )
 
 
-@app.post("/knowledge/query", response_model=KnowledgeQueryResponse)
+@router.post("/knowledge/query", response_model=KnowledgeQueryResponse)
 async def knowledge_query(
     request: KnowledgeQueryRequest, http_request: Request
 ) -> KnowledgeQueryResponse | JSONResponse:
@@ -127,7 +116,7 @@ async def knowledge_query(
         )
 
 
-@app.post("/chat/stream", response_model=None)
+@router.post("/chat/stream", response_model=None)
 async def chat_stream(request: ChatRequest, http_request: Request) -> StreamingResponse | JSONResponse:
     service: ChatService = http_request.app.state.chat_service
     try:
@@ -175,3 +164,38 @@ async def chat_stream(request: ChatRequest, http_request: Request) -> StreamingR
             yield f"event: error\ndata: {json.dumps(error)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings if settings is not None else get_settings()
+    provider = create_chat_model_provider(settings)
+    embedding_provider = create_embedding_provider(settings)
+    reranker = create_reranker(settings)
+    query_rewriter = RuleBasedQueryRewriter()
+    vector_store = create_vector_store(settings, dimension=embedding_provider.dimension)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        try:
+            yield
+        finally:
+            if isinstance(vector_store, MilvusVectorStore):
+                await asyncio.to_thread(vector_store.client.close)
+
+    application = FastAPI(title="CartPilot", lifespan=lifespan)
+    application.state.chat_service = ChatService(
+        session_store=InMemorySessionStore(), model_provider=provider
+    )
+    application.state.after_sales_extractor = AfterSalesExtractor(provider)
+    application.state.knowledge_base_service = KnowledgeBaseService(
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+        model_provider=provider,
+        reranker=reranker,
+        query_rewriter=query_rewriter,
+    )
+    application.include_router(router)
+    return application
+
+
+app = create_app()

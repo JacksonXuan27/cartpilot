@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
+      CHAT_PROVIDER: ${CHAT_PROVIDER:-stub}
       CHAT_MODEL: ${CHAT_MODEL:-local-stub}
       CHAT_BASE_URL: ${CHAT_BASE_URL:-http://localhost:8000/v1}
       CHAT_API_KEY: ${CHAT_API_KEY:-local-development-key}
@@ -15,7 +16,13 @@ services:
       RERANK_API_KEY: ${RERANK_API_KEY:-}
       DATABASE_URL: ${DATABASE_URL:-sqlite:///./data/cartpilot.db}
       MILVUS_URI: ${MILVUS_URI:-http://milvus:19530}
-      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-cartpilot_chunks}
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hash}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBED_API_KEY: ${EMBED_API_KEY:-}
+      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-64}
     ports:
       - "8000:8000"
     depends_on:

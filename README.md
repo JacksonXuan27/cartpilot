@@ -42,6 +42,12 @@ uv run uvicorn app.main:app --reload
 
 当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。`/knowledge/query` 使用本地规则改写查询，分别检索并通过 RRF 合并候选，再由本地 `LexicalReranker` 排序；配置 `RERANK_PROVIDER=siliconflow`、`RERANK_MODEL`、`RERANK_BASE_URL` 和 `RERANK_API_KEY` 后，会改用 SiliconFlow 重排，并按重排分数执行置信度判断。没有启用重排时，置信度判断仍使用向量相似度。重排配置独立于聊天模型凭据。
 
+设置 `CHAT_PROVIDER=openai-compatible` 后，`/chat`、`/chat/stream`、售后信息提取和知识库问答使用 `CHAT_MODEL`、`CHAT_BASE_URL`、`CHAT_API_KEY` 指定的模型。未选择远程供应商时保持 stub，不会因填写了密钥而自动切换。选择远程供应商但缺少凭据时，应用直接报配置错误，不悄悄回退到本地替身。
+
+语义向量设置为 `EMBEDDING_PROVIDER=openai-compatible`，使用 `EMBEDDING_MODEL`、`EMBEDDING_BASE_URL` 和 `EMBEDDING_API_KEY`（也兼容 `EMBED_API_KEY`）。默认模型 `BAAI/bge-m3` 对应 `EMBEDDING_DIMENSION=1024`；本地 Hash 替身默认 64 维。向量库维度必须与嵌入一致，不能复用不同维度的集合。未指定 `MILVUS_COLLECTION` 时按维度生成集合名。
+
+设置 `MILVUS_URI` 后，知识问答连接 Milvus；未设置时使用内存向量库。应用直接在 Windows 运行时使用 `http://127.0.0.1:19530`，在 Compose 网络内使用 `http://milvus:19530`。Milvus 客户端在应用关闭时释放。启动并不等于已有知识数据：先向相同集合导入业务文档，再验收带来源的回答。
+
 ## Docker 服务
 
 Docker Compose 会启动应用、Milvus Standalone、etcd 和 MinIO：
@@ -52,6 +58,10 @@ docker compose up --build
 ```
 
 应用健康检查：`GET http://127.0.0.1:8000/healthz`；Milvus 健康检查由 Compose 自动执行。首次启动需要下载镜像，实际容器验收应在 Docker Desktop 引擎运行时进行。
+
+在章节 worktree 开发且凭据保存在仓库根目录时，不需要复制密钥文件。从 `D:\code\cartpilot\.worktrees\ch04-hybrid-retrieval` 运行 `docker compose --env-file ..\..\.env up --build`，Compose 会将聊天、Embedding、Milvus 和重排配置传给该章节应用。不要从尚未集成这些改动的 `main` 目录启动并据此判断章节功能。
+
+本地测试通过 HTTP 测试传输与 Milvus 边界替身验证装配、普通对话、SSE、查询改写、重排和客户端释放；这些测试不代表硅基流动、Docker 或真实 Milvus 已通过服务验收。
 
 ## 测试
 

@@ -73,7 +73,7 @@ class FakeMilvusClient:
         self.created.append(kwargs)
         return {"code": 0}
 
-    def insert(self, **kwargs):
+    def upsert(self, **kwargs):
         self.inserted.append(kwargs)
         return self.insert_response
 
@@ -83,7 +83,7 @@ class FakeMilvusClient:
 
 
 @pytest.mark.asyncio
-async def test_milvus_store_creates_collection_inserts_and_searches():
+async def test_milvus_store_creates_collection_upserts_and_searches():
     document_id = uuid4()
     client = FakeMilvusClient(
         search_response=[

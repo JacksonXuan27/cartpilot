@@ -4,12 +4,16 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
-def test_settings_requires_provider_credentials(monkeypatch):
-    for name in ("CHAT_MODEL", "CHAT_BASE_URL", "CHAT_API_KEY"):
+def test_settings_defaults_to_local_providers_without_credentials(monkeypatch):
+    for name in ("CHAT_PROVIDER", "CHAT_MODEL", "CHAT_BASE_URL", "CHAT_API_KEY",
+                 "EMBEDDING_PROVIDER", "EMBEDDING_DIMENSION"):
         monkeypatch.delenv(name, raising=False)
 
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+    settings = Settings(_env_file=None)
+
+    assert settings.chat_provider == "stub"
+    assert settings.embedding_provider == "hash"
+    assert settings.embedding_dimension == 64
 
 
 def test_settings_reads_environment_values(monkeypatch):

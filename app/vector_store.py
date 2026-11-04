@@ -119,11 +119,13 @@ class InMemoryVectorStore:
 
 
 class MilvusClientLike(Protocol):
+    def close(self) -> None: ...
+
     def has_collection(self, collection_name: str) -> bool: ...
 
     def create_collection(self, **kwargs: Any) -> Any: ...
 
-    def insert(self, **kwargs: Any) -> Any: ...
+    def upsert(self, **kwargs: Any) -> Any: ...
 
     def search(self, **kwargs: Any) -> Any: ...
 
@@ -150,11 +152,11 @@ class MilvusVectorStore:
         await self._ensure_collection()
         rows = [self._to_row(record) for record in records]
         response = await asyncio.to_thread(
-            self.client.insert,
+            self.client.upsert,
             collection_name=self.collection_name,
             data=rows,
         )
-        self._check_response(response, "insert")
+        self._check_response(response, "upsert")
         return len(records)
 
     async def search(
@@ -175,6 +177,7 @@ class MilvusVectorStore:
                 "content",
                 "metadata",
             ],
+            consistency_level="Strong",
         )
         return self._parse_search_response(response)
 
@@ -191,6 +194,8 @@ class MilvusVectorStore:
                 dimension=self.dimension,
                 metric_type=self.metric_type,
                 auto_id=False,
+                id_type="string",
+                max_length=512,
                 enable_dynamic_field=True,
             )
             self._check_response(response, "create_collection")
