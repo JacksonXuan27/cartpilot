@@ -57,7 +57,7 @@ uv run uvicorn app.main:app --reload
 
 当前接口默认使用本地确定性模型替身，便于在没有外部模型密钥时运行测试。真实模型配置通过本地 `.env` 提供，不提交密钥。
 
-如需接入自建观测服务或 Langfuse 兼容网关，可在 `.env` 中配置 `OBSERVABILITY_EXPORT_URL`，并按需设置 `OBSERVABILITY_API_KEY`。导出在后台队列中执行，观测服务不可用时不会阻塞对话和 Workflow 主链路；未配置端点时继续使用内存记录器。
+如需将 Workflow Trace 和模型用量发送到 Langfuse，在 `.env` 中同时配置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` 和 `LANGFUSE_BASE_URL`。三项齐全时优先使用 Langfuse；否则可用 `OBSERVABILITY_EXPORT_URL` 和可选的 `OBSERVABILITY_API_KEY` 接入通用 HTTP JSON 接收端。两种导出都通过后台队列执行，不发送对话正文，导出失败不会阻塞 Workflow 主链路；没有配置外部接收端时使用内存记录器。自部署 Langfuse 时，`LANGFUSE_BASE_URL` 应填写应用容器可访问的地址，而非宿主机专用的 `localhost`。
 
 ## Docker 服务
 

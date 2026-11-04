@@ -1,9 +1,11 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Event
 
 import pytest
 
+import app.observability as observability
 from app.contracts import ChatMessage, TokenUsage
 from app.observability import (
     HttpObservabilityExporter,
@@ -12,6 +14,7 @@ from app.observability import (
     ModelCallMetric,
     ModelPricing,
     TraceSpan,
+    observability_exporter_from_env,
 )
 from app.providers import StubModelProvider
 from app.react_loop import ReactLoopNode
@@ -67,6 +70,31 @@ class BlockingTransport:
     def send(self, payload: dict[str, object]) -> None:
         self.started.set()
         self.release.wait(timeout=2)
+
+
+class RecordingLangfuseObservation:
+    def __init__(self, record: dict[str, object]) -> None:
+        self.record = record
+
+    def update(self, **kwargs: object) -> None:
+        self.record["update"] = kwargs
+
+    def end(self) -> None:
+        self.record["ended"] = True
+
+
+class RecordingLangfuseClient:
+    def __init__(self) -> None:
+        self.observations: list[dict[str, object]] = []
+        self.flushed = False
+
+    def start_observation(self, **kwargs: object) -> RecordingLangfuseObservation:
+        record = dict(kwargs)
+        self.observations.append(record)
+        return RecordingLangfuseObservation(record)
+
+    def flush(self) -> None:
+        self.flushed = True
 
 
 @pytest.mark.anyio
@@ -376,3 +404,119 @@ def test_http_exporter_drops_events_instead_of_blocking_when_queue_is_full():
     finally:
         transport.release.set()
         exporter.close()
+
+
+def test_langfuse_exporter_sends_metadata_and_usage_without_message_content():
+    client = RecordingLangfuseClient()
+    exporter = observability.LangfuseObservabilityExporter(client)
+    try:
+        exporter.record(
+            TraceSpan(
+                trace_id="trace-langfuse",
+                span_id="span-langfuse",
+                parent_span_id="parent-langfuse",
+                name="workflow.run",
+                status="completed",
+                started_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 10, 7, 0, 0, 0, 1000, tzinfo=timezone.utc),
+                duration_ms=1,
+                attributes={"request_id": "request-langfuse"},
+            )
+        )
+        exporter.record(
+            ModelCallMetric(
+                trace_id="trace-langfuse",
+                run_id="run-langfuse",
+                operation="react_loop.complete",
+                model_name="test-model",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                duration_ms=4,
+                estimated_cost_usd=0.0001,
+                created_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+            )
+        )
+        exporter.flush()
+    finally:
+        exporter.close()
+
+    assert [record["as_type"] for record in client.observations] == [
+        "span",
+        "generation",
+    ]
+    serialized = json.dumps(client.observations, ensure_ascii=False)
+    assert "request-langfuse" in serialized
+    assert "private customer message" not in serialized
+    generation = client.observations[1]
+    assert generation["model"] == "test-model"
+    assert generation["usage_details"] == {
+        "input": 12,
+        "output": 8,
+        "total": 20,
+    }
+    assert client.flushed
+
+
+def test_langfuse_environment_takes_priority_over_http_export(monkeypatch):
+    client = RecordingLangfuseClient()
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "http://langfuse.test")
+    monkeypatch.setenv("OBSERVABILITY_EXPORT_URL", "http://fallback.test")
+    monkeypatch.setattr(
+        observability,
+        "_create_langfuse_client",
+        lambda **kwargs: client,
+    )
+
+    exporter = observability_exporter_from_env()
+    try:
+        assert isinstance(exporter, observability.LangfuseObservabilityExporter)
+        assert exporter.client is client
+    finally:
+        if exporter is not None:
+            exporter.close()
+
+
+def test_incomplete_langfuse_configuration_uses_generic_http_export(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "http://langfuse.test")
+    monkeypatch.setenv("OBSERVABILITY_EXPORT_URL", "http://fallback.test")
+
+    exporter = observability_exporter_from_env()
+
+    assert isinstance(exporter, HttpObservabilityExporter)
+    exporter.close()
+
+
+def test_langfuse_configuration_is_loaded_from_dotenv_file(monkeypatch, tmp_path):
+    client = RecordingLangfuseClient()
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+        "OBSERVABILITY_EXPORT_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    Path(".env").write_text(
+        "LANGFUSE_PUBLIC_KEY=pk-from-dotenv\n"
+        "LANGFUSE_SECRET_KEY=sk-from-dotenv\n"
+        "LANGFUSE_BASE_URL=http://langfuse.test\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        observability,
+        "_create_langfuse_client",
+        lambda **kwargs: client,
+    )
+
+    exporter = observability_exporter_from_env()
+    try:
+        assert isinstance(exporter, observability.LangfuseObservabilityExporter)
+        assert exporter.client is client
+    finally:
+        if exporter is not None:
+            exporter.close()

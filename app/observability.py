@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -10,9 +11,10 @@ from collections import deque
 from datetime import datetime, timezone
 from queue import Full, Queue
 from threading import Event, RLock, Thread
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
+from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -224,21 +226,197 @@ class HttpObservabilityExporter:
                 self._events.task_done()
 
 
-def observability_exporter_from_env() -> HttpObservabilityExporter | None:
-    endpoint = os.getenv("OBSERVABILITY_EXPORT_URL", "").strip()
+def observability_exporter_from_env() -> (
+    HttpObservabilityExporter | LangfuseObservabilityExporter | None
+):
+    dotenv = dotenv_values(".env")
+
+    def setting(name: str, default: str = "") -> str:
+        value = os.getenv(name)
+        if value is None:
+            value = dotenv.get(name)
+        return (value or default).strip()
+
+    public_key = setting("LANGFUSE_PUBLIC_KEY")
+    secret_key = setting("LANGFUSE_SECRET_KEY")
+    base_url = setting("LANGFUSE_BASE_URL")
+    if public_key and secret_key and base_url:
+        return LangfuseObservabilityExporter(
+            _create_langfuse_client(
+                public_key=public_key,
+                secret_key=secret_key,
+                base_url=base_url,
+            ),
+            service_name=setting("OBSERVABILITY_SERVICE_NAME", "cartpilot"),
+            queue_size=int(setting("OBSERVABILITY_QUEUE_SIZE", "1000")),
+        )
+
+    endpoint = setting("OBSERVABILITY_EXPORT_URL")
     if not endpoint:
         return None
-    timeout_seconds = float(os.getenv("OBSERVABILITY_TIMEOUT_SECONDS", "1.0"))
-    queue_size = int(os.getenv("OBSERVABILITY_QUEUE_SIZE", "1000"))
+    timeout_seconds = float(setting("OBSERVABILITY_TIMEOUT_SECONDS", "1.0"))
+    queue_size = int(setting("OBSERVABILITY_QUEUE_SIZE", "1000"))
     return HttpObservabilityExporter(
         HttpJsonTransport(
             endpoint,
-            api_key=os.getenv("OBSERVABILITY_API_KEY") or None,
+            api_key=setting("OBSERVABILITY_API_KEY") or None,
             timeout_seconds=timeout_seconds,
         ),
-        service_name=os.getenv("OBSERVABILITY_SERVICE_NAME", "cartpilot"),
+        service_name=setting("OBSERVABILITY_SERVICE_NAME", "cartpilot"),
         queue_size=queue_size,
     )
+
+
+def _create_langfuse_client(
+    *, public_key: str, secret_key: str, base_url: str
+) -> Any:
+    from langfuse import Langfuse
+
+    return Langfuse(
+        public_key=public_key,
+        secret_key=secret_key,
+        base_url=base_url,
+    )
+
+
+class LangfuseObservabilityExporter:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        service_name: str = "cartpilot",
+        queue_size: int = 1000,
+    ) -> None:
+        if not service_name.strip():
+            raise ValueError("service_name cannot be empty")
+        if queue_size < 1:
+            raise ValueError("queue_size must be positive")
+        self.client = client
+        self.service_name = service_name
+        self._events: Queue[TraceSpan | ModelCallMetric | None] = Queue(
+            maxsize=queue_size
+        )
+        self._closed = Event()
+        self._lock = RLock()
+        self._dropped_events = 0
+        self._failed_events = 0
+        self._worker = Thread(
+            target=self._run,
+            name=f"{service_name}-langfuse-exporter",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def record(self, item: TraceSpan | ModelCallMetric) -> None:
+        if not isinstance(item, (TraceSpan, ModelCallMetric)):
+            raise TypeError("Langfuse exporter accepts TraceSpan or ModelCallMetric")
+        with self._lock:
+            if self._closed.is_set():
+                return
+            try:
+                self._events.put_nowait(item.model_copy(deep=True))
+            except Full:
+                self._dropped_events += 1
+
+    def flush(self) -> None:
+        self._events.join()
+        try:
+            self.client.flush()
+        except Exception:
+            with self._lock:
+                self._failed_events += 1
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed.is_set():
+                return
+            self._closed.set()
+        self.flush()
+        self._events.put(None)
+        self._worker.join(timeout=1.0)
+
+    @property
+    def dropped_events(self) -> int:
+        with self._lock:
+            return self._dropped_events
+
+    @property
+    def failed_events(self) -> int:
+        with self._lock:
+            return self._failed_events
+
+    def _run(self) -> None:
+        while True:
+            item = self._events.get()
+            try:
+                if item is None:
+                    return
+                try:
+                    if isinstance(item, TraceSpan):
+                        self._export_span(item)
+                    else:
+                        self._export_model_call(item)
+                except Exception:
+                    with self._lock:
+                        self._failed_events += 1
+            finally:
+                self._events.task_done()
+
+    def _export_span(self, span: TraceSpan) -> None:
+        trace_context = {"trace_id": _langfuse_id(span.trace_id, 32)}
+        if span.parent_span_id:
+            trace_context["parent_span_id"] = _langfuse_id(
+                span.parent_span_id, 16
+            )
+        observation = self.client.start_observation(
+            trace_context=trace_context,
+            name=span.name,
+            as_type="span",
+            metadata={
+                "service": self.service_name,
+                "status": span.status,
+                "started_at": span.started_at.isoformat(),
+                "ended_at": span.ended_at.isoformat(),
+                "duration_ms": span.duration_ms,
+                **span.attributes,
+            },
+        )
+        observation.end()
+
+    def _export_model_call(self, metric: ModelCallMetric) -> None:
+        observation = self.client.start_observation(
+            trace_context={"trace_id": _langfuse_id(metric.trace_id, 32)},
+            name=metric.operation,
+            as_type="generation",
+            model=metric.model_name,
+            metadata={
+                "service": self.service_name,
+                "run_id": metric.run_id,
+                "operation": metric.operation,
+                "duration_ms": metric.duration_ms,
+                "created_at": metric.created_at.isoformat(),
+            },
+            usage_details={
+                "input": metric.prompt_tokens,
+                "output": metric.completion_tokens,
+                "total": metric.total_tokens,
+            },
+            cost_details=(
+                {"total": metric.estimated_cost_usd}
+                if metric.estimated_cost_usd is not None
+                else None
+            ),
+        )
+        observation.end()
+
+
+def _langfuse_id(value: str, length: int) -> str:
+    normalized = value.replace("-", "").lower()
+    if len(normalized) == length and all(
+        char in "0123456789abcdef" for char in normalized
+    ):
+        return normalized
+    return hashlib.blake2b(value.encode("utf-8"), digest_size=length // 2).hexdigest()
 
 
 class InMemoryModelMetricsRecorder:
