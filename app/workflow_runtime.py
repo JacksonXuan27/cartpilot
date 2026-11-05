@@ -10,6 +10,7 @@ from app.after_sales_routing import AfterSalesRoutingNode
 from app.contracts import ChatMessage, TokenUsage
 from app.context_layers import ContextLayerManager
 from app.context_reference_resolution import ContextReferenceResolutionNode
+from app.default_tools import default_tool_registry
 from app.intent_routing import IntentRouterNode
 from app.config import get_settings
 from app.providers import ChatModelProvider, create_chat_model_provider
@@ -410,6 +411,7 @@ def workflow_response(state: WorkflowState) -> WorkflowRunResponse:
 def default_workflow_runtime(
     model_provider: ChatModelProvider | None = None,
 ) -> WorkflowRuntime:
+    settings = get_settings()
     checkpoint_store = SQLiteWorkflowCheckpointStore(
         DatabaseManager("sqlite:///./data/cartpilot.db")
     )
@@ -417,9 +419,11 @@ def default_workflow_runtime(
     return WorkflowRuntime(
         model_provider
         if model_provider is not None
-        else create_chat_model_provider(get_settings()),
-        ToolRegistry(),
+        else create_chat_model_provider(settings),
+        default_tool_registry(),
         checkpoint_store=checkpoint_store,
+        token_budget=settings.token_budget,
         trace_recorder=exporter,
         metrics_recorder=exporter,
+        model_name=settings.chat_model,
     )

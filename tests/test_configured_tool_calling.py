@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts import ChatMessage
-from app.providers import OpenAICompatibleChatProvider
+from app.providers import OpenAICompatibleChatProvider, StubModelProvider
 from app.workflow_runtime import default_workflow_runtime
 from app.react_loop import ReactLoopNode
 from app.tool_registry import ToolRegistry
@@ -110,6 +110,21 @@ def test_default_workflow_runtime_uses_the_configured_provider():
 
     assert runtime.model_provider is provider
     assert runtime.nodes[-1].model_provider is provider
+
+
+def test_default_workflow_runtime_uses_configured_token_budget(monkeypatch):
+    class ConfiguredSettings:
+        token_budget = 5000
+        chat_model = "configured-test-model"
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.get_settings",
+        lambda: ConfiguredSettings(),
+    )
+
+    runtime = default_workflow_runtime(StubModelProvider())
+
+    assert runtime.token_budget == 5000
 
 def test_internal_model_tool_calls_are_not_part_of_public_chat_schema():
     assert "tool_calls" not in ChatMessage.model_json_schema()["properties"]
