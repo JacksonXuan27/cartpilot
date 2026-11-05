@@ -11,7 +11,6 @@ from app.after_sales import AfterSalesExtractionError, AfterSalesExtractor
 from app.chat import ChatService, StreamingRequestError, error_response
 from app.data_models import UserFeedback
 from app.database import DatabaseManager
-from app.embeddings import HashEmbeddingProvider
 from app.contracts import (
     AfterSalesExtractionRequest,
     AfterSalesExtractionResponse,
@@ -24,11 +23,22 @@ from app.knowledge_base import (
     KnowledgeQueryRequest,
     KnowledgeQueryResponse,
 )
+from app.data_models import KnowledgeDocument
 from app.config import get_settings
 from app.providers import ModelProviderError, create_chat_model_provider
 from app.sessions import InMemorySessionStore, SessionNotFoundError
-from app.repositories import RecordNotFoundError, UserFeedbackRepository, initialize_schema
-from app.vector_store import InMemoryVectorStore
+from app.repositories import (
+    KnowledgeDocumentRepository,
+    RecordNotFoundError,
+    RetrievalRecordRepository,
+    UserFeedbackRepository,
+    initialize_schema,
+)
+from app.runtime_integrations import (
+    create_embedding_provider,
+    create_reranker,
+    create_vector_store,
+)
 from app.workflow_runtime import (
     WorkflowRunRequest,
     WorkflowRunResponse,
@@ -75,22 +85,44 @@ class FeedbackReviewResponse(BaseModel):
     reviewed_at: datetime
 
 
+class KnowledgeIndexRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: UUID = Field(default_factory=uuid4)
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=100_000)
+    source: str = Field(min_length=1, max_length=500)
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class KnowledgeIndexResponse(BaseModel):
+    document_id: UUID
+    indexed_count: int = Field(ge=0)
+
+
 app = FastAPI(title="CartPilot")
-feedback_database = DatabaseManager("sqlite:///./data/cartpilot.db")
+settings = get_settings()
+feedback_database = DatabaseManager(
+    settings.database_url,
+    timeout_seconds=settings.database_timeout_seconds,
+)
 feedback_database.open()
 initialize_schema(feedback_database)
 app.state.feedback_repository = UserFeedbackRepository(feedback_database)
-default_provider = create_chat_model_provider(get_settings())
+default_provider = create_chat_model_provider(settings)
 app.state.chat_service = ChatService(
     session_store=InMemorySessionStore(),
     model_provider=default_provider,
 )
 app.state.after_sales_extractor = AfterSalesExtractor(default_provider)
-default_embedding_provider = HashEmbeddingProvider(dimension=64)
+default_embedding_provider = create_embedding_provider(settings)
 app.state.knowledge_base_service = KnowledgeBaseService(
     embedding_provider=default_embedding_provider,
-    vector_store=InMemoryVectorStore(dimension=64),
+    vector_store=create_vector_store(settings),
     model_provider=default_provider,
+    retrieval_repository=RetrievalRecordRepository(feedback_database),
+    document_repository=KnowledgeDocumentRepository(feedback_database),
+    reranker=create_reranker(settings),
 )
 app.state.workflow_runtime = default_workflow_runtime(default_provider)
 
@@ -289,6 +321,38 @@ async def knowledge_query(
                 retryable=True,
             ).model_dump(mode="json"),
         )
+
+
+@app.post(
+    "/knowledge/index",
+    response_model=KnowledgeIndexResponse,
+    status_code=201,
+)
+async def knowledge_index(
+    request: KnowledgeIndexRequest, http_request: Request
+) -> KnowledgeIndexResponse | JSONResponse:
+    service: KnowledgeBaseService = http_request.app.state.knowledge_base_service
+    try:
+        indexed_count = await service.index_document(
+            document_id=request.document_id,
+            title=request.title,
+            content=request.content,
+            source=request.source,
+            metadata=request.metadata,
+        )
+    except KnowledgeBaseError as exc:
+        return JSONResponse(
+            status_code=503,
+            content=error_response(
+                code="knowledge_index_error",
+                message=str(exc),
+                retryable=True,
+            ).model_dump(mode="json"),
+        )
+    return KnowledgeIndexResponse(
+        document_id=request.document_id,
+        indexed_count=indexed_count,
+    )
 
 
 @app.post("/chat/stream", response_model=None)

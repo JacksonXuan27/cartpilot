@@ -6,6 +6,8 @@ from app.after_sales_tools import (
     InMemoryRefundRepository,
     RefundTool,
 )
+from app.data_models import OrderRecord
+from app.database import DatabaseManager
 from app.faq_tools import FAQEntry, FAQSearchTool, InMemoryFAQRepository
 from app.logistics_tools import (
     InMemoryShipmentRepository,
@@ -14,6 +16,7 @@ from app.logistics_tools import (
     TrackingEvent,
 )
 from app.order_tools import InMemoryOrderRepository, Order, OrderQueryTool
+from app.repositories import OrderRepository
 from app.tool_registry import ToolRegistry
 
 
@@ -21,21 +24,18 @@ _DEMO_ORDER_ID = "ORD-DEMO-1001"
 _DEMO_TIME = datetime(2026, 9, 25, 10, 30, tzinfo=timezone.utc)
 
 
-def default_tool_registry() -> ToolRegistry:
+def default_tool_registry(
+    *,
+    database: DatabaseManager | None = None,
+) -> ToolRegistry:
     """Build the deterministic business tools used by the local app runtime."""
-    order_repository = InMemoryOrderRepository(
-        {
-            _DEMO_ORDER_ID: Order(
-                order_id=_DEMO_ORDER_ID,
-                status="shipped",
-                product_name="CartPilot 演示耳机",
-                quantity=1,
-                total_amount=399.0,
-                currency="CNY",
-                placed_at=_DEMO_TIME,
-            )
-        }
-    )
+    if database is None:
+        order_repository = InMemoryOrderRepository(
+            {_DEMO_ORDER_ID: _demo_order()}
+        )
+    else:
+        order_repository = OrderRepository(database)
+        _ensure_demo_order(database)
     shipment_repository = InMemoryShipmentRepository(
         {
             _DEMO_ORDER_ID: Shipment(
@@ -83,3 +83,29 @@ def default_tool_registry() -> ToolRegistry:
             AfterSalesTool(order_repository, InMemoryAfterSalesRepository()),
         ]
     )
+
+
+def _demo_order() -> Order:
+    return Order(
+        order_id=_DEMO_ORDER_ID,
+        status="shipped",
+        product_name="CartPilot 演示耳机",
+        quantity=1,
+        total_amount=399.0,
+        currency="CNY",
+        placed_at=_DEMO_TIME,
+    )
+
+
+def _ensure_demo_order(database: DatabaseManager) -> None:
+    order = _demo_order()
+    record = OrderRecord(
+        **order.model_dump(),
+        created_at=_DEMO_TIME,
+        updated_at=_DEMO_TIME,
+    )
+    with database.transaction() as connection:
+        connection.execute(
+            "INSERT OR IGNORE INTO orders (order_id, payload) VALUES (?, ?)",
+            (record.order_id, record.model_dump_json()),
+        )

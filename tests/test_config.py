@@ -23,6 +23,16 @@ def test_settings_reads_environment_values(monkeypatch):
         "DATABASE_URL": "sqlite:///./data/test.db",
         "DATABASE_TIMEOUT_SECONDS": "3.5",
         "DATABASE_POOL_SIZE": "3",
+        "EMBEDDING_PROVIDER": "openai-compatible",
+        "EMBEDDING_MODEL": "BAAI/bge-m3",
+        "EMBEDDING_DIMENSION": "1024",
+        "EMBED_API_KEY": "embedding-test-key",
+        "MILVUS_URI": "http://milvus:19530",
+        "MILVUS_COLLECTION": "cartpilot_chunks",
+        "RERANK_PROVIDER": "siliconflow",
+        "RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
+        "RERANK_BASE_URL": "https://provider.example/v1",
+        "RERANK_API_KEY": "rerank-test-key",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -37,6 +47,15 @@ def test_settings_reads_environment_values(monkeypatch):
     assert settings.database_url == "sqlite:///./data/test.db"
     assert settings.database_timeout_seconds == 3.5
     assert settings.database_pool_size == 3
+    assert settings.embedding_provider == "openai-compatible"
+    assert settings.embedding_model == "BAAI/bge-m3"
+    assert settings.embedding_dimension == 1024
+    assert settings.embed_api_key == "embedding-test-key"
+    assert settings.milvus_uri == "http://milvus:19530"
+    assert settings.milvus_collection == "cartpilot_chunks"
+    assert settings.rerank_provider == "siliconflow"
+    assert settings.rerank_model == "BAAI/bge-reranker-v2-m3"
+    assert settings.rerank_api_key == "rerank-test-key"
 
 
 def test_settings_rejects_unknown_chat_provider(monkeypatch):

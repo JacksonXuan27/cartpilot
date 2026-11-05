@@ -123,7 +123,7 @@ class MilvusClientLike(Protocol):
 
     def create_collection(self, **kwargs: Any) -> Any: ...
 
-    def insert(self, **kwargs: Any) -> Any: ...
+    def upsert(self, **kwargs: Any) -> Any: ...
 
     def search(self, **kwargs: Any) -> Any: ...
 
@@ -150,7 +150,7 @@ class MilvusVectorStore:
         await self._ensure_collection()
         rows = [self._to_row(record) for record in records]
         response = await asyncio.to_thread(
-            self.client.insert,
+            self.client.upsert,
             collection_name=self.collection_name,
             data=rows,
         )

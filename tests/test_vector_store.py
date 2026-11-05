@@ -57,13 +57,13 @@ async def test_in_memory_store_upsert_replaces_existing_record():
 
 
 class FakeMilvusClient:
-    def __init__(self, search_response=None, insert_response=None):
+    def __init__(self, search_response=None, upsert_response=None):
         self.collections: set[str] = set()
         self.created: list[dict[str, object]] = []
-        self.inserted: list[dict[str, object]] = []
+        self.upserted: list[dict[str, object]] = []
         self.searches: list[dict[str, object]] = []
         self.search_response = search_response if search_response is not None else [[]]
-        self.insert_response = insert_response if insert_response is not None else {"code": 0}
+        self.upsert_response = upsert_response if upsert_response is not None else {"code": 0}
 
     def has_collection(self, collection_name: str) -> bool:
         return collection_name in self.collections
@@ -73,9 +73,9 @@ class FakeMilvusClient:
         self.created.append(kwargs)
         return {"code": 0}
 
-    def insert(self, **kwargs):
-        self.inserted.append(kwargs)
-        return self.insert_response
+    def upsert(self, **kwargs):
+        self.upserted.append(kwargs)
+        return self.upsert_response
 
     def search(self, **kwargs):
         self.searches.append(kwargs)
@@ -108,7 +108,7 @@ async def test_milvus_store_creates_collection_inserts_and_searches():
 
     assert written == 1
     assert client.created[0]["dimension"] == 3
-    assert client.inserted[0]["data"][0]["id"] == "chunk-1"
+    assert client.upserted[0]["data"][0]["id"] == "chunk-1"
     assert client.searches[0]["limit"] == 5
     assert matches[0].document_id == document_id
     assert matches[0].metadata == {"source": "policy.md"}
@@ -116,7 +116,7 @@ async def test_milvus_store_creates_collection_inserts_and_searches():
 
 @pytest.mark.asyncio
 async def test_milvus_store_validates_dimensions_and_response_errors():
-    client = FakeMilvusClient(insert_response={"code": 1, "message": "unavailable"})
+    client = FakeMilvusClient(upsert_response={"code": 1, "message": "unavailable"})
     store = MilvusVectorStore(client, "cartpilot_chunks", dimension=2)
 
     with pytest.raises(VectorDimensionError, match="dimension"):

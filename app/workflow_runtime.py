@@ -24,6 +24,7 @@ from app.workflow_checkpoints import (
     WorkflowCheckpointStore,
 )
 from app.database import DatabaseManager
+from app.repositories import initialize_schema
 from app.observability import (
     InMemoryModelMetricsRecorder,
     InMemoryTraceRecorder,
@@ -412,15 +413,19 @@ def default_workflow_runtime(
     model_provider: ChatModelProvider | None = None,
 ) -> WorkflowRuntime:
     settings = get_settings()
-    checkpoint_store = SQLiteWorkflowCheckpointStore(
-        DatabaseManager("sqlite:///./data/cartpilot.db")
+    database = DatabaseManager(
+        settings.database_url,
+        timeout_seconds=settings.database_timeout_seconds,
     )
+    database.open()
+    initialize_schema(database)
+    checkpoint_store = SQLiteWorkflowCheckpointStore(database)
     exporter = observability_exporter_from_env()
     return WorkflowRuntime(
         model_provider
         if model_provider is not None
         else create_chat_model_provider(settings),
-        default_tool_registry(),
+        default_tool_registry(database=database),
         checkpoint_store=checkpoint_store,
         token_budget=settings.token_budget,
         trace_recorder=exporter,

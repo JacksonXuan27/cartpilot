@@ -106,6 +106,7 @@ uv run uvicorn app.main:app --reload
 - 非流式对话：`POST http://127.0.0.1:8000/chat`；
 - SSE 流式对话：`POST http://127.0.0.1:8000/chat/stream`；
 - 售后信息提取：`POST http://127.0.0.1:8000/after-sales/extract`。
+- 知识文档入库：`POST http://127.0.0.1:8000/knowledge/index`；
 - 知识库问答：`POST http://127.0.0.1:8000/knowledge/query`；
 - 用户反馈：`POST http://127.0.0.1:8000/feedback`，请求体示例：
 
@@ -120,7 +121,7 @@ uv run uvicorn app.main:app --reload
 
 审核反馈可通过 POST /feedback/{feedback_id}/review 写回审核状态、备注和审核人；GET /feedback/export 按 JSONL 导出反馈及审核元数据，可使用 rating、review_status 和 limit 筛选。导出不包含对话正文。
 
-默认使用本地确定性模型替身。配置 `.env` 中的 `CHAT_PROVIDER=openai-compatible`、`CHAT_BASE_URL`、`CHAT_MODEL` 和 `CHAT_API_KEY` 后，普通对话、知识问答及售后信息提取会调用配置的 OpenAI API 规范兼容接口；不支持非标准扩展响应字段。真实模型可在 Workflow ReAct 循环中请求已注册的工具，并将调用结果回传模型；默认运行时尚未装配业务工具，实际可调用范围由运行时注册表决定。密钥不提交到 Git。
+默认配置使用本地确定性聊天模型、Hash Embedding 和词法重排器。设置 `CHAT_PROVIDER=openai-compatible` 及对应聊天凭据后，普通对话、知识问答和售后信息提取会调用 OpenAI API 规范兼容接口。知识文档先通过 `/knowledge/index` 清洗、切块、生成向量并写入 SQLite 与 Milvus，再由 `/knowledge/query` 检索、重排和生成回答。设置 `EMBEDDING_PROVIDER=openai-compatible`、`EMBED_API_KEY`、`EMBEDDING_DIMENSION` 以及 `RERANK_PROVIDER=siliconflow`、`RERANK_API_KEY` 后，可使用外部 Embedding 和 Rerank 服务；Milvus collection 的向量维度必须与 Embedding 输出一致。Workflow 默认注册订单、物流、FAQ、退款及售后工具。密钥不提交到 Git。
 
 如需将 Workflow Trace 和模型用量发送到 Langfuse，在 `.env` 中同时配置 `LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` 和 `LANGFUSE_BASE_URL`。三项齐全时优先使用 Langfuse；否则可用 `OBSERVABILITY_EXPORT_URL` 和可选的 `OBSERVABILITY_API_KEY` 接入通用 HTTP JSON 接收端。两种导出都通过后台队列执行，不发送对话正文，导出失败不会阻塞 Workflow 主链路；没有配置外部接收端时使用内存记录器。自部署 Langfuse 时，`LANGFUSE_BASE_URL` 应填写应用容器可访问的地址，而非宿主机专用的 `localhost`。
 
@@ -133,7 +134,7 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
-应用健康检查：`GET http://127.0.0.1:8000/healthz`；Milvus 健康检查由 Compose 自动执行。首次启动需要下载镜像，实际容器验收应在 Docker Desktop 引擎运行时进行。
+应用健康检查：`GET http://127.0.0.1:8000/healthz`；Milvus 健康检查由 Compose 自动执行，SQLite 文件保存在宿主机 `data/cartpilot.db`。首次启动需要下载镜像，实际容器验收应在 Docker Desktop 引擎运行时进行。
 
 ## 测试
 

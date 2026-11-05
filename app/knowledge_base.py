@@ -9,10 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.confidence import ConfidencePolicy, ThresholdConfidencePolicy
 from app.contracts import ChatMessage
 from app.embeddings import EmbeddingError, EmbeddingProvider
+from app.document_processing import DocumentChunker
 from app.providers import ChatModelProvider, ModelProviderError
-from app.repositories import RetrievalRecordRepository
-from app.data_models import RetrievalHit, RetrievalRecord
-from app.vector_store import VectorMatch, VectorStore, VectorStoreError
+from app.repositories import (
+    KnowledgeDocumentRepository,
+    RetrievalRecordRepository,
+)
+from app.data_models import KnowledgeDocument, RetrievalHit, RetrievalRecord
+from app.reranking import Reranker, RerankerError
+from app.retrieval import RetrievalResult
+from app.vector_store import VectorMatch, VectorRecord, VectorStore, VectorStoreError
 
 
 class KnowledgeBaseError(RuntimeError):
@@ -55,6 +61,9 @@ class KnowledgeBaseService:
     vector_store: VectorStore
     model_provider: ChatModelProvider
     retrieval_repository: RetrievalRecordRepository | None = None
+    document_repository: KnowledgeDocumentRepository | None = None
+    reranker: Reranker | None = None
+    rerank_candidate_limit: int = 20
     confidence_policy: ConfidencePolicy = field(
         default_factory=ThresholdConfidencePolicy
     )
@@ -65,13 +74,25 @@ class KnowledgeBaseService:
         started_at = time.perf_counter()
         try:
             query_vector = await self.embedding_provider.embed(request.query)
-            matches = await self.vector_store.search(query_vector, request.top_k)
+            retrieval_limit = (
+                max(request.top_k, self.rerank_candidate_limit)
+                if self.reranker is not None
+                else request.top_k
+            )
+            matches = await self.vector_store.search(query_vector, retrieval_limit)
+            if self.reranker is not None:
+                matches = await self._rerank(request.query, matches, request.top_k)
             decision = self.confidence_policy.evaluate(matches)
             if not decision.accepted:
                 answer = self.low_confidence_message
             else:
                 answer = await self._generate_answer(request.query, matches)
-        except (EmbeddingError, VectorStoreError, ModelProviderError) as exc:
+        except (
+            EmbeddingError,
+            VectorStoreError,
+            ModelProviderError,
+            RerankerError,
+        ) as exc:
             raise KnowledgeBaseError(str(exc)) from exc
 
         sources = (
@@ -108,6 +129,81 @@ class KnowledgeBaseService:
             confidence_reason=decision.reason,
             low_quality=not decision.accepted,
         )
+
+    async def index_document(
+        self,
+        *,
+        document_id: UUID,
+        title: str,
+        content: str,
+        source: str,
+        metadata: dict[str, str] | None = None,
+    ) -> int:
+        if self.document_repository is None:
+            raise KnowledgeBaseError("document indexing is not configured")
+        chunks = DocumentChunker().split(content)
+        try:
+            vectors = await self.embedding_provider.embed_batch(
+                [chunk.content for chunk in chunks]
+            )
+            records = [
+                VectorRecord(
+                    record_id=f"{document_id}:{chunk.index}",
+                    document_id=document_id,
+                    chunk_index=chunk.index,
+                    content=chunk.content,
+                    vector=vector,
+                    metadata={"source": source, **(metadata or {})},
+                )
+                for chunk, vector in zip(chunks, vectors, strict=True)
+            ]
+            await self.vector_store.upsert(records)
+            now = datetime.now(timezone.utc)
+            await self.document_repository.save(
+                KnowledgeDocument(
+                    document_id=document_id,
+                    title=title,
+                    content=content,
+                    source=source,
+                    metadata=metadata or {},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        except (EmbeddingError, VectorStoreError, ValueError) as exc:
+            raise KnowledgeBaseError(str(exc)) from exc
+        return len(records)
+
+    async def _rerank(
+        self,
+        query: str,
+        matches: Sequence[VectorMatch],
+        top_k: int,
+    ) -> list[VectorMatch]:
+        candidates = [
+            RetrievalResult(
+                record_id=match.record_id,
+                document_id=match.document_id,
+                chunk_index=match.chunk_index,
+                content=match.content,
+                score=match.score,
+                method="vector",
+                metadata=match.metadata,
+            )
+            for match in matches
+        ]
+        ranked = await self.reranker.rerank(query, candidates, top_k=top_k)
+        return [
+            VectorMatch(
+                record_id=result.record_id,
+                document_id=result.document_id,
+                chunk_index=result.chunk_index,
+                content=result.content,
+                score=result.score,
+                metadata=result.metadata,
+            )
+            for result in ranked
+        ]
 
     async def _generate_answer(
         self, query: str, matches: Sequence[VectorMatch]

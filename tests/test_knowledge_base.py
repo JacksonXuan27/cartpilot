@@ -11,6 +11,7 @@ from app.knowledge_base import (
 )
 from app.main import app
 from app.providers import StubModelProvider
+from app.retrieval import RetrievalResult
 from app.vector_store import InMemoryVectorStore, VectorRecord
 
 
@@ -22,6 +23,26 @@ def make_service(reply: str = "退款通常在三个工作日内到账。") -> K
     vector_store = InMemoryVectorStore(dimension=16)
     model_provider = StubModelProvider(reply=reply)
     return KnowledgeBaseService(embedding_provider, vector_store, model_provider)
+
+
+class RecordingReranker:
+    def __init__(self):
+        self.calls = []
+
+    async def rerank(self, query, candidates, top_k=10):
+        self.calls.append((query, list(candidates), top_k))
+        return [
+            RetrievalResult(
+                record_id=candidate.record_id,
+                document_id=candidate.document_id,
+                chunk_index=candidate.chunk_index,
+                content=candidate.content,
+                score=0.93,
+                method=candidate.method,
+                metadata=candidate.metadata,
+            )
+            for candidate in candidates[:top_k]
+        ]
 
 
 @pytest.mark.asyncio
@@ -48,6 +69,35 @@ async def test_knowledge_service_retrieves_context_and_generates_answer():
     assert response.answer == "退款通常在三个工作日内到账。"
     assert response.sources[0].document_id == DOCUMENT_ID
     assert response.sources[0].metadata == {"source": "refund-policy.md"}
+
+
+@pytest.mark.asyncio
+async def test_knowledge_service_reranks_candidates_before_answer_generation():
+    service = make_service()
+    reranker = RecordingReranker()
+    service.reranker = reranker
+    vector = await service.embedding_provider.embed("退款多久到账")
+    await service.vector_store.upsert(
+        [
+            VectorRecord(
+                record_id="refund-ranked",
+                document_id=DOCUMENT_ID,
+                chunk_index=0,
+                content="原路退款通常在三个工作日内到账。",
+                vector=vector,
+                metadata={"source": "refund-policy.md"},
+            )
+        ]
+    )
+
+    response = await service.query(
+        KnowledgeQueryRequest(query="退款多久到账", top_k=1)
+    )
+
+    assert reranker.calls[0][0] == "退款多久到账"
+    assert reranker.calls[0][2] == 1
+    assert response.confidence_score == pytest.approx(0.93)
+    assert response.sources[0].metadata["source"] == "refund-policy.md"
 
 
 @pytest.mark.asyncio

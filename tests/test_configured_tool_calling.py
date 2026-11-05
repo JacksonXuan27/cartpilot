@@ -104,27 +104,47 @@ async def test_openai_compatible_provider_supports_react_tool_roundtrip():
     assert second_round[-1].content == '{"echo": "hello"}'
 
 
-def test_default_workflow_runtime_uses_the_configured_provider():
+def test_default_workflow_runtime_uses_the_configured_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "app.workflow_runtime.get_settings",
+        lambda: type(
+            "ConfiguredSettings",
+            (),
+            {
+                "database_url": f"sqlite:///{tmp_path / 'provider.db'}",
+                "database_timeout_seconds": 5.0,
+                "token_budget": 2000,
+                "chat_model": "configured-test-model",
+            },
+        )(),
+    )
     provider = object()
     runtime = default_workflow_runtime(provider)
 
     assert runtime.model_provider is provider
     assert runtime.nodes[-1].model_provider is provider
+    runtime.checkpoint_store.close()
 
 
-def test_default_workflow_runtime_uses_configured_token_budget(monkeypatch):
-    class ConfiguredSettings:
-        token_budget = 5000
-        chat_model = "configured-test-model"
-
+def test_default_workflow_runtime_uses_configured_token_budget(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "app.workflow_runtime.get_settings",
-        lambda: ConfiguredSettings(),
+        lambda: type(
+            "ConfiguredSettings",
+            (),
+            {
+                "database_url": f"sqlite:///{tmp_path / 'runtime.db'}",
+                "database_timeout_seconds": 5.0,
+                "token_budget": 5000,
+                "chat_model": "configured-test-model",
+            },
+        )(),
     )
 
     runtime = default_workflow_runtime(StubModelProvider())
 
     assert runtime.token_budget == 5000
+    runtime.checkpoint_store.close()
 
 def test_internal_model_tool_calls_are_not_part_of_public_chat_schema():
     assert "tool_calls" not in ChatMessage.model_json_schema()["properties"]

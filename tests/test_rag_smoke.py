@@ -7,6 +7,8 @@ from app.embeddings import HashEmbeddingProvider
 from app.knowledge_base import KnowledgeBaseService
 from app.main import app
 from app.providers import StubModelProvider
+from app.repositories import KnowledgeDocumentRepository, initialize_schema
+from app.database import DatabaseManager
 from app.vector_store import InMemoryVectorStore, VectorRecord
 
 
@@ -45,3 +47,39 @@ def test_rag_http_smoke_from_indexed_chunk_to_answer():
     body = response.json()
     assert body["answer"] == "退款通常在三个工作日内到账。"
     assert body["sources"][0]["metadata"]["source"] == "refund-policy.md"
+
+
+def test_knowledge_index_http_endpoint_persists_and_indexes_a_document(tmp_path):
+    database = DatabaseManager(f"sqlite:///{tmp_path / 'knowledge.db'}")
+    database.open()
+    initialize_schema(database)
+    embedding_provider = HashEmbeddingProvider(dimension=16)
+    vector_store = InMemoryVectorStore(dimension=16)
+    app.state.knowledge_base_service = KnowledgeBaseService(
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+        model_provider=StubModelProvider(reply="退款一般三天内到账。"),
+        document_repository=KnowledgeDocumentRepository(database),
+    )
+    document_id = "00000000-0000-0000-0000-000000000399"
+
+    indexed = TestClient(app).post(
+        "/knowledge/index",
+        json={
+            "document_id": document_id,
+            "title": "退款政策",
+            "content": "退款通常在三个工作日内原路到账。",
+            "source": "refund-policy.md",
+        },
+    )
+    queried = TestClient(app).post(
+        "/knowledge/query",
+        json={"query": "退款通常在三个工作日内原路到账", "top_k": 1},
+    )
+
+    assert indexed.status_code == 201
+    assert indexed.json()["indexed_count"] == 1
+    assert queried.status_code == 200
+    assert queried.json()["sources"][0]["document_id"] == document_id
+    assert queried.json()["sources"][0]["metadata"]["source"] == "refund-policy.md"
+    database.close()
